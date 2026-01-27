@@ -1,0 +1,12 @@
+[package]
+name = "chain-adapters"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+async-trait = "0.1"
+alloy = { version = "1", features = ["full"] }
+sui_sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk" }
