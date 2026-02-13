@@ -1,0 +1,12 @@
+[profile.default]
+src = "contracts/evm/src"
+test = "contracts/evm/test"
+script = "contracts/evm/script"
+out = "contracts/evm/out"
+libs = ["contracts/evm/lib"]
+cache_path = "contracts/evm/cache"
+remappings = [
+    "@openzeppelin/contracts/=contracts/evm/lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=contracts/evm/lib/openzeppelin-contracts-upgradeable/contracts/",
+    "openzeppelin-foundry-upgrades/=contracts/evm/lib/openzeppelin-foundry-upgrades/src/",
+]

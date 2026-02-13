@@ -2150,6 +2150,7 @@ dependencies = [
  "serde",
  "sui-sdk",
  "tokio",
+ "types",
 ]
 
 [[package]]
@@ -7980,6 +7981,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "solver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chain-adapters",
+ "serde_json",
+ "tokio",
+ "types",
+ "validator",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9344,6 +9357,10 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "types"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "typeshare"
@@ -9499,6 +9516,18 @@ dependencies = [
  "js-sys",
  "rand 0.9.2",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "validator"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "chain-adapters",
+ "serde_json",
+ "tokio",
+ "types",
 ]
 
 [[package]]

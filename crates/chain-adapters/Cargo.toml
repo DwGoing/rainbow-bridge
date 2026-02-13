@@ -10,3 +10,4 @@ tokio = { workspace = true, features = ["macros", "rt", "time"] }
 async-trait = "0.1"
 alloy = { version = "1", features = ["full"] }
 sui_sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk" }
+types = { path = "../types" }
