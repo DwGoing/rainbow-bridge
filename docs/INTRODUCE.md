@@ -119,6 +119,7 @@ Offline demo commands:
 Real chain runtime commands:
 - `make run-solver`
 - `make run-validator`
+- `make run-explorer`
 - `make run-validator-off`
 - `make run-validator-dry`
 - `make run-validator-send`

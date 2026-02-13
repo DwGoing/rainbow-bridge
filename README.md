@@ -108,6 +108,7 @@ cp .env.mainnet.example .env
 ```bash
 make run-solver
 make run-validator
+make run-explorer
 ```
 
 Validator mode shortcuts:
@@ -117,6 +118,14 @@ make run-validator-off
 make run-validator-dry
 make run-validator-send
 ```
+
+Explorer UI:
+
+```bash
+open http://127.0.0.1:8080
+```
+
+Explorer reads the shared event log (`FLOW_EVENT_LOG_PATH`, default `data/flow-events.jsonl`).
 
 ## Notes
 

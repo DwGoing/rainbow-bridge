@@ -10,6 +10,7 @@ STRICT_SUI ?= 0
 .PHONY: demo-evm-sui demo-sui-evm
 .PHONY: run-solver run-validator
 .PHONY: run-validator-off run-validator-dry run-validator-send
+.PHONY: run-explorer
 
 help:
 	@echo "Rainbow Bridge monorepo tasks"
@@ -40,6 +41,7 @@ help:
 	@echo "Runtime:"
 	@echo "  make run-solver"
 	@echo "  make run-validator"
+	@echo "  make run-explorer"
 	@echo "  make run-validator-off"
 	@echo "  make run-validator-dry"
 	@echo "  make run-validator-send"
@@ -59,7 +61,7 @@ rust-check:
 	cd $(RUST_WORKSPACE) && cargo check
 
 rust-test:
-	cd $(RUST_WORKSPACE) && cargo test -p types -p chain-adapters -p solver -p validator
+	cd $(RUST_WORKSPACE) && cargo test -p types -p chain-adapters -p solver -p validator -p explorer
 
 rust-fmt:
 	cd $(RUST_WORKSPACE) && cargo fmt
@@ -118,3 +120,6 @@ run-validator-dry:
 
 run-validator-send:
 	cd $(RUST_WORKSPACE) && ./scripts/run_validator.sh --mode send
+
+run-explorer:
+	cd $(RUST_WORKSPACE) && ./scripts/run_explorer.sh

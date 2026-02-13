@@ -2,6 +2,10 @@ use anyhow::{Context, Result, anyhow};
 use chain_adapters::{ChainAdapter, ChainKind, EvmAdapter, SuiAdapter};
 use solver::{build_proposal, build_settlement_action};
 use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 use types::{IntentSubmissionRef, IntentSubmittedEvent};
 
 fn load_intent_event() -> Result<IntentSubmittedEvent> {
@@ -83,6 +87,44 @@ fn enrich_polled_intents() -> bool {
         .unwrap_or(false)
 }
 
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn append_flow_event(kind: &str, intent_hash: &str, payload: serde_json::Value) -> Result<()> {
+    let path =
+        env::var("FLOW_EVENT_LOG_PATH").unwrap_or_else(|_| "data/flow-events.jsonl".to_string());
+    if let Some(parent) = Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create flow log directory '{}'", parent.display())
+        })?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open FLOW_EVENT_LOG_PATH '{path}'"))?;
+    let line = serde_json::json!({
+        "kind": kind,
+        "intent_hash": intent_hash,
+        "timestamp": now_unix(),
+        "source": "solver",
+        "payload": payload
+    });
+    writeln!(file, "{}", serde_json::to_string(&line)?)
+        .with_context(|| format!("failed to append flow event to '{path}'"))?;
+    Ok(())
+}
+
+fn try_append_flow_event(kind: &str, intent_hash: &str, payload: serde_json::Value) {
+    if let Err(err) = append_flow_event(kind, intent_hash, payload) {
+        eprintln!("warn: failed to append flow event ({kind}): {err}");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let (src_kind, src_block, src_adapter) = if skip_rpc("SOLVER_SRC") {
@@ -124,6 +166,13 @@ async fn main() -> Result<()> {
             } else {
                 load_polled_intent_events()?
             };
+            for event in &events {
+                try_append_flow_event(
+                    "intent_submitted",
+                    &event.intent.intent_hash,
+                    serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
+                );
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -141,6 +190,13 @@ async fn main() -> Result<()> {
             } else {
                 load_polled_intent_refs()?
             };
+            for r in &refs {
+                try_append_flow_event(
+                    "intent_submission_ref",
+                    &r.intent_hash,
+                    serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({})),
+                );
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -163,6 +219,16 @@ async fn main() -> Result<()> {
     let amount_out = event.intent.min_dst_amount;
 
     let proposal = build_proposal(&event, &solver, &validator, amount_out)?;
+    try_append_flow_event(
+        "intent_submitted",
+        &event.intent.intent_hash,
+        serde_json::to_value(&event).unwrap_or_else(|_| serde_json::json!({})),
+    );
+    try_append_flow_event(
+        "settlement_proposed",
+        &proposal.intent_hash,
+        serde_json::to_value(&proposal).unwrap_or_else(|_| serde_json::json!({})),
+    );
     let src_action_target = env::var("SOLVER_SRC_ENDPOINT_ADDRESS")
         .ok()
         .or_else(|| env::var("SOLVER_SRC_PACKAGE_ID").ok());

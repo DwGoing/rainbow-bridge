@@ -5,6 +5,9 @@ use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, Result, anyhow};
 use chain_adapters::{ChainAdapter, ChainKind, EvmAdapter, SuiAdapter};
 use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
@@ -20,6 +23,37 @@ fn now_unix() -> Result<u64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|e| anyhow!("system time error: {e}"))?
         .as_secs())
+}
+
+fn append_flow_event(kind: &str, intent_hash: &str, payload: serde_json::Value) -> Result<()> {
+    let path =
+        env::var("FLOW_EVENT_LOG_PATH").unwrap_or_else(|_| "data/flow-events.jsonl".to_string());
+    if let Some(parent) = Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create flow log directory '{}'", parent.display())
+        })?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open FLOW_EVENT_LOG_PATH '{path}'"))?;
+    let line = serde_json::json!({
+        "kind": kind,
+        "intent_hash": intent_hash,
+        "timestamp": now_unix().unwrap_or(0),
+        "source": "validator",
+        "payload": payload
+    });
+    writeln!(file, "{}", serde_json::to_string(&line)?)
+        .with_context(|| format!("failed to append flow event to '{path}'"))?;
+    Ok(())
+}
+
+fn try_append_flow_event(kind: &str, intent_hash: &str, payload: serde_json::Value) {
+    if let Err(err) = append_flow_event(kind, intent_hash, payload) {
+        eprintln!("warn: failed to append flow event ({kind}): {err}");
+    }
 }
 
 fn load_proposal() -> Result<SettlementProposal> {
@@ -596,6 +630,16 @@ async fn main() -> Result<()> {
         } else {
             execute_evm_txs(mode, &executable_txs).await?
         };
+        for d in &decisions {
+            if let Some(intent_hash) = d["intent_hash"].as_str() {
+                try_append_flow_event("validator_decision", intent_hash, d.clone());
+            }
+        }
+        for e in &execution_results {
+            if let Some(intent_hash) = e["intent_hash"].as_str() {
+                try_append_flow_event("execution_result", intent_hash, e.clone());
+            }
+        }
         let mode_label = match mode {
             TxMode::Off => "off",
             TxMode::DryRun => "dry-run",
@@ -621,6 +665,14 @@ async fn main() -> Result<()> {
 
     let proposal = load_proposal()?;
     let decision = validate_proposal(&proposal);
+    try_append_flow_event(
+        "validator_decision",
+        &proposal.intent_hash,
+        serde_json::json!({
+            "intent_hash": proposal.intent_hash,
+            "decision": decision
+        }),
+    );
 
     println!(
         "{}",
