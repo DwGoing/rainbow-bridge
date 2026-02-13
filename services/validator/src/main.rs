@@ -3,7 +3,8 @@ use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, Result, anyhow};
-use chain_adapters::{ChainAdapter, ChainKind, EvmAdapter, SuiAdapter};
+use chain_adapters::{ChainAdapter, EvmAdapter, SuiAdapter};
+use std::collections::HashMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -17,6 +18,38 @@ use validator::{
     SettlementActionKind, build_settlement_action_payload, encode_settlement_call,
     plan_settlement_action, validate_proposal,
 };
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ChainConfigInput {
+    name: Option<String>,
+    chain_kind: String,
+    rpc_url: Option<String>,
+    endpoint_address: Option<String>,
+    package_id: Option<String>,
+    state_object_id: Option<String>,
+    module: Option<String>,
+    skip_rpc: Option<bool>,
+    chain_id: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ChainConfig {
+    name: String,
+    chain_kind: String,
+    rpc_url: Option<String>,
+    endpoint_address: Option<String>,
+    package_id: Option<String>,
+    state_object_id: Option<String>,
+    module: String,
+    skip_rpc: bool,
+    chain_id: Option<u64>,
+}
+
+struct ChainRuntime {
+    config: ChainConfig,
+    block_number: u64,
+    adapter: Option<Box<dyn ChainAdapter>>,
+}
 
 fn now_unix() -> Result<u64> {
     Ok(SystemTime::now()
@@ -72,47 +105,131 @@ fn load_polled_proposals() -> Result<Vec<SettlementProposalRef>> {
     Ok(proposals)
 }
 
-fn build_adapter_from_env(prefix: &str) -> Result<Box<dyn ChainAdapter>> {
-    let kind = env::var(format!("{prefix}_CHAIN_KIND")).unwrap_or_else(|_| "evm".to_string());
-    let rpc = env::var(format!("{prefix}_RPC_URL"))
-        .with_context(|| format!("missing {prefix}_RPC_URL for selected chain"))?;
+fn load_polled_proposals_by_source() -> Result<Option<HashMap<String, Vec<SettlementProposalRef>>>>
+{
+    let raw = match env::var("VALIDATOR_POLLED_PROPOSALS_BY_SOURCE_JSON") {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let parsed: HashMap<String, Vec<SettlementProposalRef>> =
+        serde_json::from_str(&raw).context("invalid VALIDATOR_POLLED_PROPOSALS_BY_SOURCE_JSON")?;
+    Ok(Some(parsed))
+}
 
-    match kind.as_str() {
+fn normalize_chain_config(idx: usize, input: ChainConfigInput, _prefix: &str) -> ChainConfig {
+    let kind = input.chain_kind.to_lowercase();
+    ChainConfig {
+        name: input
+            .name
+            .unwrap_or_else(|| format!("{}-{}", kind, idx + 1)),
+        chain_kind: kind,
+        rpc_url: input.rpc_url,
+        endpoint_address: input.endpoint_address,
+        package_id: input.package_id,
+        state_object_id: input.state_object_id,
+        module: input.module.unwrap_or_else(|| "bridge".to_string()),
+        skip_rpc: input.skip_rpc.unwrap_or(false),
+        chain_id: input.chain_id,
+    }
+}
+
+fn parse_legacy_chain_config(prefix: &str) -> Result<ChainConfig> {
+    let chain_kind = env::var(format!("{prefix}_CHAIN_KIND")).unwrap_or_else(|_| "evm".to_string());
+    let skip_rpc = env::var(format!("{prefix}_SKIP_RPC"))
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let rpc_url = env::var(format!("{prefix}_RPC_URL")).ok();
+
+    if !skip_rpc && rpc_url.is_none() {
+        return Err(anyhow!("missing {prefix}_RPC_URL for selected chain"));
+    }
+
+    let chain_id = env::var(format!("{prefix}_CHAIN_ID"))
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+
+    Ok(ChainConfig {
+        name: format!("{}_default", prefix.to_lowercase()),
+        chain_kind: chain_kind.to_lowercase(),
+        rpc_url,
+        endpoint_address: env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok(),
+        package_id: env::var(format!("{prefix}_PACKAGE_ID"))
+            .ok()
+            .or_else(|| env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok()),
+        state_object_id: env::var(format!("{prefix}_STATE_OBJECT_ID")).ok(),
+        module: env::var(format!("{prefix}_MODULE")).unwrap_or_else(|_| "bridge".to_string()),
+        skip_rpc,
+        chain_id,
+    })
+}
+
+fn load_chain_configs(prefix: &str) -> Result<Vec<ChainConfig>> {
+    let key = format!("{prefix}_CHAINS_JSON");
+    if let Ok(raw) = env::var(&key) {
+        let parsed: Vec<ChainConfigInput> =
+            serde_json::from_str(&raw).with_context(|| format!("invalid {key}"))?;
+        if parsed.is_empty() {
+            return Err(anyhow!("{key} cannot be empty"));
+        }
+        let mut out = Vec::with_capacity(parsed.len());
+        for (idx, cfg) in parsed.into_iter().enumerate() {
+            let normalized = normalize_chain_config(idx, cfg, prefix);
+            if !normalized.skip_rpc && normalized.rpc_url.is_none() {
+                return Err(anyhow!("{key}[{idx}] requires rpc_url when skip_rpc=false"));
+            }
+            out.push(normalized);
+        }
+        Ok(out)
+    } else {
+        Ok(vec![parse_legacy_chain_config(prefix)?])
+    }
+}
+
+fn build_adapter_from_config(cfg: &ChainConfig) -> Result<Box<dyn ChainAdapter>> {
+    let rpc = cfg
+        .rpc_url
+        .clone()
+        .ok_or_else(|| anyhow!("missing rpc_url for chain {}", cfg.name))?;
+
+    match cfg.chain_kind.as_str() {
         "evm" => {
-            let endpoint_address = env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok();
-            if let Some(addr) = endpoint_address {
+            if let Some(addr) = cfg.endpoint_address.as_deref() {
                 let parsed = addr
                     .parse()
-                    .with_context(|| format!("invalid {prefix}_ENDPOINT_ADDRESS"))?;
+                    .with_context(|| format!("invalid endpoint_address for {}", cfg.name))?;
                 Ok(Box::new(EvmAdapter::new_with_endpoint(rpc, parsed)))
             } else {
                 Ok(Box::new(EvmAdapter::new(rpc)))
             }
         }
-        "sui" => {
-            let package_id = env::var(format!("{prefix}_PACKAGE_ID"))
-                .ok()
-                .or_else(|| env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok());
-            let module =
-                env::var(format!("{prefix}_MODULE")).unwrap_or_else(|_| "bridge".to_string());
-            Ok(Box::new(SuiAdapter::new_with_module(
-                rpc, package_id, module,
-            )))
-        }
-        _ => Err(anyhow!(
-            "unsupported {prefix}_CHAIN_KIND '{kind}', expected 'evm' or 'sui'"
+        "sui" => Ok(Box::new(SuiAdapter::new_with_module(
+            rpc,
+            cfg.package_id.clone(),
+            cfg.module.clone(),
+        ))),
+        other => Err(anyhow!(
+            "unsupported chain_kind '{other}' for chain '{}'",
+            cfg.name
         )),
     }
 }
 
-fn chain_kind_from_env(prefix: &str) -> String {
-    env::var(format!("{prefix}_CHAIN_KIND")).unwrap_or_else(|_| "evm".to_string())
-}
+async fn build_runtime(cfg: ChainConfig) -> Result<ChainRuntime> {
+    if cfg.skip_rpc {
+        return Ok(ChainRuntime {
+            config: cfg,
+            block_number: 0,
+            adapter: None,
+        });
+    }
 
-fn skip_rpc(prefix: &str) -> bool {
-    env::var(format!("{prefix}_SKIP_RPC"))
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    let adapter = build_adapter_from_config(&cfg)?;
+    let block_number = adapter.get_block_number().await?;
+    Ok(ChainRuntime {
+        config: cfg,
+        block_number,
+        adapter: Some(adapter),
+    })
 }
 
 fn use_chain_polling() -> bool {
@@ -174,6 +291,8 @@ enum TxMode {
 
 #[derive(Debug, Clone)]
 struct ExecutableTx {
+    source_chain: String,
+    rpc_url: String,
     intent_hash: String,
     method: String,
     to: Address,
@@ -182,6 +301,7 @@ struct ExecutableTx {
 
 #[derive(Debug, Clone)]
 struct ExecutableSuiCall {
+    source_chain: String,
     intent_hash: String,
     method: String,
     package: String,
@@ -287,28 +407,42 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
         return Ok(Vec::new());
     }
 
-    let rpc = env::var("VALIDATOR_SRC_RPC_URL")
-        .context("VALIDATOR_TX_MODE requires VALIDATOR_SRC_RPC_URL")?;
-    let url = rpc.parse().context("invalid VALIDATOR_SRC_RPC_URL")?;
+    let signer = if mode == TxMode::Send {
+        let pk = env::var("VALIDATOR_TX_PRIVATE_KEY")
+            .context("VALIDATOR_TX_MODE=send requires VALIDATOR_TX_PRIVATE_KEY")?;
+        Some(
+            pk.parse::<PrivateKeySigner>()
+                .context("invalid VALIDATOR_TX_PRIVATE_KEY")?,
+        )
+    } else {
+        None
+    };
 
-    match mode {
-        TxMode::DryRun => {
-            let provider = ProviderBuilder::new().connect_http(url);
-            let mut results = Vec::with_capacity(txs.len());
-            for tx in txs {
-                let req = make_tx_request(tx);
+    let mut results = Vec::with_capacity(txs.len());
+    for tx in txs {
+        let url = tx
+            .rpc_url
+            .parse()
+            .with_context(|| format!("invalid rpc_url for source chain {}", tx.source_chain))?;
+        let req = make_tx_request(tx);
+
+        match mode {
+            TxMode::DryRun => {
+                let provider = ProviderBuilder::new().connect_http(url);
                 let gas = provider
                     .estimate_gas(req)
                     .await
                     .map_err(|e| anyhow!("dry-run estimate_gas failed: {e}"));
                 match gas {
                     Ok(estimated_gas) => results.push(serde_json::json!({
+                        "source_chain": tx.source_chain,
                         "intent_hash": tx.intent_hash,
                         "method": tx.method,
                         "status": "simulated",
                         "estimated_gas": estimated_gas
                     })),
                     Err(err) => results.push(serde_json::json!({
+                        "source_chain": tx.source_chain,
                         "intent_hash": tx.intent_hash,
                         "method": tx.method,
                         "status": "simulation_failed",
@@ -316,18 +450,11 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
                     })),
                 }
             }
-            Ok(results)
-        }
-        TxMode::Send => {
-            let pk = env::var("VALIDATOR_TX_PRIVATE_KEY")
-                .context("VALIDATOR_TX_MODE=send requires VALIDATOR_TX_PRIVATE_KEY")?;
-            let signer: PrivateKeySigner =
-                pk.parse().context("invalid VALIDATOR_TX_PRIVATE_KEY")?;
-            let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
-
-            let mut results = Vec::with_capacity(txs.len());
-            for tx in txs {
-                let req = make_tx_request(tx);
+            TxMode::Send => {
+                let signer = signer
+                    .clone()
+                    .ok_or_else(|| anyhow!("missing signer for send mode"))?;
+                let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
                 let sent = provider.send_transaction(req).await;
                 match sent {
                     Ok(pending) => {
@@ -340,6 +467,7 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
                             .await;
                             match receipt_result {
                                 Ok(Ok(receipt)) => results.push(serde_json::json!({
+                                    "source_chain": tx.source_chain,
                                     "intent_hash": tx.intent_hash,
                                     "method": tx.method,
                                     "status": "confirmed",
@@ -348,6 +476,7 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
                                     "success": receipt.status()
                                 })),
                                 Ok(Err(err)) => results.push(serde_json::json!({
+                                    "source_chain": tx.source_chain,
                                     "intent_hash": tx.intent_hash,
                                     "method": tx.method,
                                     "status": "receipt_failed",
@@ -355,6 +484,7 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
                                     "error": err.to_string()
                                 })),
                                 Err(_) => results.push(serde_json::json!({
+                                    "source_chain": tx.source_chain,
                                     "intent_hash": tx.intent_hash,
                                     "method": tx.method,
                                     "status": "receipt_timeout",
@@ -364,6 +494,7 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
                             }
                         } else {
                             results.push(serde_json::json!({
+                                "source_chain": tx.source_chain,
                                 "intent_hash": tx.intent_hash,
                                 "method": tx.method,
                                 "status": "sent",
@@ -372,6 +503,7 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
                         }
                     }
                     Err(err) => results.push(serde_json::json!({
+                        "source_chain": tx.source_chain,
                         "intent_hash": tx.intent_hash,
                         "method": tx.method,
                         "status": "send_failed",
@@ -379,10 +511,11 @@ async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde
                     })),
                 }
             }
-            Ok(results)
+            TxMode::Off => {}
         }
-        TxMode::Off => Ok(Vec::new()),
     }
+
+    Ok(results)
 }
 
 async fn execute_sui_calls(
@@ -440,6 +573,7 @@ async fn execute_sui_calls(
         let success = parse_sui_success(&stdout, &stderr);
         if output.status.success() {
             results.push(serde_json::json!({
+                "source_chain": call.source_chain,
                 "intent_hash": call.intent_hash,
                 "method": call.method,
                 "status": if mode == TxMode::DryRun { "simulated" } else { "sent" },
@@ -450,6 +584,7 @@ async fn execute_sui_calls(
             }));
         } else {
             results.push(serde_json::json!({
+                "source_chain": call.source_chain,
                 "intent_hash": call.intent_hash,
                 "method": call.method,
                 "status": if mode == TxMode::DryRun { "simulation_failed" } else { "send_failed" },
@@ -464,172 +599,223 @@ async fn execute_sui_calls(
     Ok(results)
 }
 
+fn chain_meta(rt: &ChainRuntime) -> serde_json::Value {
+    serde_json::json!({
+        "name": rt.config.name,
+        "chain_kind": rt.config.chain_kind,
+        "chain_id": rt.config.chain_id,
+        "block_number": rt.block_number,
+        "skip_rpc": rt.config.skip_rpc,
+    })
+}
+
+fn select_source_runtime<'a>(srcs: &'a [ChainRuntime]) -> Result<&'a ChainRuntime> {
+    if let Ok(name) = env::var("VALIDATOR_SOURCE_CHAIN_NAME") {
+        if let Some(rt) = srcs.iter().find(|s| s.config.name == name) {
+            return Ok(rt);
+        }
+    }
+
+    if let Ok(id) = env::var("VALIDATOR_SOURCE_CHAIN_ID") {
+        if let Ok(chain_id) = id.parse::<u64>() {
+            if let Some(rt) = srcs.iter().find(|s| s.config.chain_id == Some(chain_id)) {
+                return Ok(rt);
+            }
+        }
+    }
+
+    srcs.first()
+        .ok_or_else(|| anyhow!("no source chain config available"))
+}
+
+fn select_destination_runtime<'a>(dsts: &'a [ChainRuntime]) -> Result<&'a ChainRuntime> {
+    dsts.first()
+        .ok_or_else(|| anyhow!("no destination chain config available"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let ts = now_unix()?;
-    let (src_kind, src_block, src_adapter) = if skip_rpc("VALIDATOR_SRC") {
-        (chain_kind_from_env("VALIDATOR_SRC"), 0, None)
-    } else {
-        let adapter = build_adapter_from_env("VALIDATOR_SRC")?;
-        let kind = match adapter.kind() {
-            ChainKind::Evm => "evm".to_string(),
-            ChainKind::Sui => "sui".to_string(),
-        };
-        let block = adapter.get_block_number().await?;
-        (kind, block, Some(adapter))
-    };
-    let (dst_kind, dst_block) = if skip_rpc("VALIDATOR_DST") {
-        (chain_kind_from_env("VALIDATOR_DST"), 0)
-    } else {
-        let adapter = build_adapter_from_env("VALIDATOR_DST")?;
-        let kind = match adapter.kind() {
-            ChainKind::Evm => "evm".to_string(),
-            ChainKind::Sui => "sui".to_string(),
-        };
-        let block = adapter.get_block_number().await?;
-        (kind, block)
-    };
+
+    let src_configs = load_chain_configs("VALIDATOR_SRC")?;
+    let dst_configs = load_chain_configs("VALIDATOR_DST")?;
+
+    let mut src_runtimes = Vec::with_capacity(src_configs.len());
+    for cfg in src_configs {
+        src_runtimes.push(build_runtime(cfg).await?);
+    }
+
+    let mut dst_runtimes = Vec::with_capacity(dst_configs.len());
+    for cfg in dst_configs {
+        dst_runtimes.push(build_runtime(cfg).await?);
+    }
 
     if use_chain_polling() {
         let from_block: u64 = env::var("VALIDATOR_FROM_BLOCK")
             .unwrap_or_else(|_| "0".to_string())
             .parse()
             .context("invalid VALIDATOR_FROM_BLOCK")?;
-        let to_block: u64 = env::var("VALIDATOR_TO_BLOCK")
-            .unwrap_or_else(|_| src_block.to_string())
-            .parse()
-            .context("invalid VALIDATOR_TO_BLOCK")?;
-        let proposals = if let Some(src) = src_adapter.as_ref() {
-            src.fetch_settlement_proposals(from_block, to_block).await?
-        } else {
-            load_polled_proposals()?
-        };
+        let to_block_override: Option<u64> = env::var("VALIDATOR_TO_BLOCK")
+            .ok()
+            .map(|v| v.parse().context("invalid VALIDATOR_TO_BLOCK"))
+            .transpose()?;
+
+        let by_source_fallback = load_polled_proposals().ok();
+        let by_source = load_polled_proposals_by_source()?;
+
         let now = ts;
         let window = challenge_window_secs()?;
-        let endpoint = env::var("VALIDATOR_SRC_ENDPOINT_ADDRESS")
-            .ok()
-            .or_else(|| env::var("VALIDATOR_SRC_PACKAGE_ID").ok());
-        let state_object_id = env::var("VALIDATOR_SRC_STATE_OBJECT_ID").ok();
         let mut executable_txs = Vec::<ExecutableTx>::new();
         let mut executable_sui_calls = Vec::<ExecutableSuiCall>::new();
-        let mut decisions = Vec::with_capacity(proposals.len());
-        for p in &proposals {
-            let plan = plan_settlement_action(p, now, window);
-            let tx_payload = match plan.action {
-                SettlementActionKind::Challenge => Some(
-                    settlement_call_payload(
-                        &src_kind,
-                        endpoint.as_deref(),
-                        state_object_id.as_deref(),
-                        "challengeSettlement",
-                        &p.intent_hash,
-                        Some(now),
-                    )
-                    .unwrap_or_else(|e| {
-                        settlement_call_payload_fallback(
-                            &src_kind,
-                            endpoint.as_deref(),
-                            state_object_id.as_deref(),
+        let mut decisions = Vec::new();
+
+        for src in &src_runtimes {
+            let to_block = to_block_override.unwrap_or(src.block_number);
+            let proposals = if let Some(adapter) = src.adapter.as_ref() {
+                adapter
+                    .fetch_settlement_proposals(from_block, to_block)
+                    .await?
+            } else if let Some(map) = by_source.as_ref() {
+                map.get(&src.config.name).cloned().unwrap_or_default()
+            } else {
+                by_source_fallback.clone().unwrap_or_default()
+            };
+
+            for p in &proposals {
+                let plan = plan_settlement_action(p, now, window);
+                let target = src
+                    .config
+                    .endpoint_address
+                    .as_deref()
+                    .or(src.config.package_id.as_deref());
+
+                let tx_payload = match plan.action {
+                    SettlementActionKind::Challenge => Some(
+                        settlement_call_payload(
+                            &src.config.chain_kind,
+                            target,
+                            src.config.state_object_id.as_deref(),
                             "challengeSettlement",
                             &p.intent_hash,
                             Some(now),
-                            &e.to_string(),
                         )
-                    }),
-                ),
-                SettlementActionKind::Finalize => Some(
-                    settlement_call_payload(
-                        &src_kind,
-                        endpoint.as_deref(),
-                        state_object_id.as_deref(),
-                        "finalizeSettlement",
-                        &p.intent_hash,
-                        Some(now),
-                    )
-                    .unwrap_or_else(|e| {
-                        settlement_call_payload_fallback(
-                            &src_kind,
-                            endpoint.as_deref(),
-                            state_object_id.as_deref(),
+                        .unwrap_or_else(|e| {
+                            settlement_call_payload_fallback(
+                                &src.config.chain_kind,
+                                target,
+                                src.config.state_object_id.as_deref(),
+                                "challengeSettlement",
+                                &p.intent_hash,
+                                Some(now),
+                                &e.to_string(),
+                            )
+                        }),
+                    ),
+                    SettlementActionKind::Finalize => Some(
+                        settlement_call_payload(
+                            &src.config.chain_kind,
+                            target,
+                            src.config.state_object_id.as_deref(),
                             "finalizeSettlement",
                             &p.intent_hash,
                             Some(now),
-                            &e.to_string(),
                         )
-                    }),
-                ),
-                SettlementActionKind::Hold => None,
-            };
-            if matches!(
-                plan.action,
-                SettlementActionKind::Challenge | SettlementActionKind::Finalize
-            ) {
-                if src_kind == "evm" {
-                    if let Some(to_str) = endpoint.as_deref() {
-                        if let Ok(to_addr) = Address::from_str(to_str) {
+                        .unwrap_or_else(|e| {
+                            settlement_call_payload_fallback(
+                                &src.config.chain_kind,
+                                target,
+                                src.config.state_object_id.as_deref(),
+                                "finalizeSettlement",
+                                &p.intent_hash,
+                                Some(now),
+                                &e.to_string(),
+                            )
+                        }),
+                    ),
+                    SettlementActionKind::Hold => None,
+                };
+
+                if matches!(
+                    plan.action,
+                    SettlementActionKind::Challenge | SettlementActionKind::Finalize
+                ) {
+                    if src.config.chain_kind == "evm" {
+                        if let (Some(to_str), Some(rpc_url)) =
+                            (target, src.config.rpc_url.as_deref())
+                        {
+                            if let Ok(to_addr) = Address::from_str(to_str) {
+                                let method = match plan.action {
+                                    SettlementActionKind::Challenge => "challengeSettlement",
+                                    SettlementActionKind::Finalize => "finalizeSettlement",
+                                    SettlementActionKind::Hold => "hold",
+                                };
+                                if let Ok(encoded) = encode_settlement_call(method, &p.intent_hash)
+                                {
+                                    if let Ok(raw) =
+                                        alloy::hex::decode(encoded.trim_start_matches("0x"))
+                                    {
+                                        let data = Bytes::from(raw);
+                                        executable_txs.push(ExecutableTx {
+                                            source_chain: src.config.name.clone(),
+                                            rpc_url: rpc_url.to_string(),
+                                            intent_hash: p.intent_hash.clone(),
+                                            method: method.to_string(),
+                                            to: to_addr,
+                                            data,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    } else if src.config.chain_kind == "sui" {
+                        if let Some(payload) = tx_payload.as_ref() {
+                            let package =
+                                payload["package"].as_str().unwrap_or_default().to_string();
+                            let module = payload["module"].as_str().unwrap_or("bridge").to_string();
+                            let function =
+                                payload["function"].as_str().unwrap_or_default().to_string();
+                            let args = payload["args"].as_array().cloned().unwrap_or_default();
                             let method = match plan.action {
                                 SettlementActionKind::Challenge => "challengeSettlement",
                                 SettlementActionKind::Finalize => "finalizeSettlement",
                                 SettlementActionKind::Hold => "hold",
                             };
-                            if let Ok(encoded) = encode_settlement_call(method, &p.intent_hash) {
-                                if let Ok(raw) =
-                                    alloy::hex::decode(encoded.trim_start_matches("0x"))
-                                {
-                                    let data = Bytes::from(raw);
-                                    executable_txs.push(ExecutableTx {
-                                        intent_hash: p.intent_hash.clone(),
-                                        method: method.to_string(),
-                                        to: to_addr,
-                                        data,
-                                    });
-                                }
-                            }
+                            executable_sui_calls.push(ExecutableSuiCall {
+                                source_chain: src.config.name.clone(),
+                                intent_hash: p.intent_hash.clone(),
+                                method: method.to_string(),
+                                package,
+                                module,
+                                function,
+                                args,
+                            });
                         }
                     }
-                } else if src_kind == "sui" {
-                    if let Some(payload) = tx_payload.as_ref() {
-                        let package = payload["package"].as_str().unwrap_or_default().to_string();
-                        let module = payload["module"].as_str().unwrap_or("bridge").to_string();
-                        let function = payload["function"].as_str().unwrap_or_default().to_string();
-                        let args = payload["args"].as_array().cloned().unwrap_or_default();
-                        let method = match plan.action {
-                            SettlementActionKind::Challenge => "challengeSettlement",
-                            SettlementActionKind::Finalize => "finalizeSettlement",
-                            SettlementActionKind::Hold => "hold",
-                        };
-                        executable_sui_calls.push(ExecutableSuiCall {
-                            intent_hash: p.intent_hash.clone(),
-                            method: method.to_string(),
-                            package,
-                            module,
-                            function,
-                            args,
-                        });
-                    }
                 }
+
+                decisions.push(serde_json::json!({
+                    "source_chain": src.config.name,
+                    "source_chain_kind": src.config.chain_kind,
+                    "intent_hash": p.intent_hash,
+                    "validator": p.validator,
+                    "solver": p.solver,
+                    "amount_out": p.amount_out,
+                    "tx_hash": p.tx_hash,
+                    "block_number": p.block_number,
+                    "timestamp": p.timestamp,
+                    "decision": plan.decision,
+                    "action": format!("{:?}", plan.action).to_lowercase(),
+                    "reason": plan.reason,
+                    "recommended_tx": tx_payload
+                }));
             }
-            decisions.push(serde_json::json!({
-                "intent_hash": p.intent_hash,
-                "validator": p.validator,
-                "solver": p.solver,
-                "amount_out": p.amount_out,
-                "tx_hash": p.tx_hash,
-                "block_number": p.block_number,
-                "timestamp": p.timestamp,
-                "decision": plan.decision,
-                "action": format!("{:?}", plan.action).to_lowercase(),
-                "reason": plan.reason,
-                "recommended_tx": tx_payload
-            }));
         }
 
         let mode = tx_mode();
-        let execution_results = if src_kind == "sui" {
-            execute_sui_calls(mode, &executable_sui_calls).await?
-        } else {
-            execute_evm_txs(mode, &executable_txs).await?
-        };
+        let mut execution_results = Vec::new();
+        execution_results.extend(execute_evm_txs(mode, &executable_txs).await?);
+        execution_results.extend(execute_sui_calls(mode, &executable_sui_calls).await?);
+
         for d in &decisions {
             if let Some(intent_hash) = d["intent_hash"].as_str() {
                 try_append_flow_event("validator_decision", intent_hash, d.clone());
@@ -640,6 +826,7 @@ async fn main() -> Result<()> {
                 try_append_flow_event("execution_result", intent_hash, e.clone());
             }
         }
+
         let mode_label = match mode {
             TxMode::Off => "off",
             TxMode::DryRun => "dry-run",
@@ -650,10 +837,8 @@ async fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "timestamp": ts,
-                "source_chain_kind": src_kind,
-                "destination_chain_kind": dst_kind,
-                "source_block_number": src_block,
-                "destination_block_number": dst_block,
+                "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
                 "tx_mode": mode_label,
                 "polled_settlement_decisions": decisions,
                 "execution_results": execution_results
@@ -665,12 +850,16 @@ async fn main() -> Result<()> {
 
     let proposal = load_proposal()?;
     let decision = validate_proposal(&proposal);
+    let src = select_source_runtime(&src_runtimes)?;
+    let dst = select_destination_runtime(&dst_runtimes)?;
+
     try_append_flow_event(
         "validator_decision",
         &proposal.intent_hash,
         serde_json::json!({
             "intent_hash": proposal.intent_hash,
-            "decision": decision
+            "decision": decision,
+            "source_chain": src.config.name,
         }),
     );
 
@@ -679,10 +868,10 @@ async fn main() -> Result<()> {
         serde_json::to_string_pretty(&serde_json::json!({
             "intent_hash": proposal.intent_hash,
             "timestamp": ts,
-            "source_chain_kind": src_kind,
-            "destination_chain_kind": dst_kind,
-            "source_block_number": src_block,
-            "destination_block_number": dst_block,
+            "source_chain": chain_meta(src),
+            "destination_chain": chain_meta(dst),
+            "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+            "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
             "decision": decision
         }))
         .context("failed to encode validator decision")?

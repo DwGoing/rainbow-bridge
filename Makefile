@@ -2,16 +2,16 @@ RUST_WORKSPACE := /Users/dwgoing/Desktop/rainbow-bridge
 EVM_DIR := /Users/dwgoing/Desktop/rainbow-bridge/contracts/evm
 SUI_DIR := /Users/dwgoing/Desktop/rainbow-bridge/contracts/sui
 STRICT_SUI ?= 0
+SUI_MOVE_ENV ?= testnet
 
 .PHONY: help check test fmt clean
-.PHONY: rust-check rust-test rust-fmt
-.PHONY: evm-build evm-test
-.PHONY: sui-build sui-test
-.PHONY: demo-evm-sui demo-sui-evm
+.PHONY: check-rust test-rust fmt-rust
+.PHONY: build-evm check-evm test-evm
+.PHONY: build-sui check-sui test-sui
+.PHONY: deploy-evm deploy-sui
 .PHONY: run-solver run-validator
 .PHONY: run-validator-off run-validator-dry run-validator-send
 .PHONY: run-explorer
-.PHONY: deploy-evm deploy-sui
 
 help:
 	@echo "Rainbow Bridge monorepo tasks"
@@ -23,21 +23,23 @@ help:
 	@echo "  make clean      - Clean Rust, EVM and Sui artifacts"
 	@echo ""
 	@echo "Rust:"
-	@echo "  make rust-check"
-	@echo "  make rust-test"
-	@echo "  make rust-fmt"
+	@echo "  make check-rust"
+	@echo "  make test-rust"
+	@echo "  make fmt-rust"
 	@echo ""
 	@echo "EVM:"
-	@echo "  make evm-build"
-	@echo "  make evm-test"
+	@echo "  make build-evm"
+	@echo "  make check-evm"
+	@echo "  make test-evm"
 	@echo ""
 	@echo "Sui:"
-	@echo "  make sui-build"
-	@echo "  make sui-test"
+	@echo "  make build-sui"
+	@echo "  make check-sui"
+	@echo "  make test-sui"
 	@echo ""
-	@echo "Demos:"
-	@echo "  make demo-evm-sui"
-	@echo "  make demo-sui-evm"
+	@echo "Deploy:"
+	@echo "  make deploy-evm"
+	@echo "  make deploy-sui"
 	@echo ""
 	@echo "Runtime:"
 	@echo "  make run-solver"
@@ -46,40 +48,43 @@ help:
 	@echo "  make run-validator-off"
 	@echo "  make run-validator-dry"
 	@echo "  make run-validator-send"
-	@echo ""
-	@echo "Deploy:"
-	@echo "  make deploy-evm"
-	@echo "  make deploy-sui"
 
-check: rust-check evm-build sui-build
+check: check-rust check-evm check-sui
 
-test: rust-test evm-test sui-test
+test: test-rust test-evm test-sui
 
-fmt: rust-fmt
+fmt: fmt-rust
 
 clean:
 	cd $(RUST_WORKSPACE) && cargo clean
 	rm -rf $(EVM_DIR)/cache $(EVM_DIR)/out
 	rm -rf $(SUI_DIR)/build
 
-rust-check:
+check-rust:
 	cd $(RUST_WORKSPACE) && cargo check
 
-rust-test:
+test-rust:
 	cd $(RUST_WORKSPACE) && cargo test -p types -p chain-adapters -p solver -p validator -p explorer
 
-rust-fmt:
+fmt-rust:
 	cd $(RUST_WORKSPACE) && cargo fmt
 
-evm-build:
+build-evm:
 	cd $(RUST_WORKSPACE) && forge build
 
-evm-test:
+check-evm: build-evm
+
+test-evm:
 	cd $(RUST_WORKSPACE) && forge test --offline
 
-sui-build:
+build-sui:
 	@if command -v sui >/dev/null 2>&1; then \
-		if sui move build --path $(SUI_DIR) --skip-fetch-latest-git-deps; then \
+		if sui move build --help 2>&1 | grep -q -- '--skip-fetch-latest-git-deps'; then \
+			SUI_BUILD_CMD="sui move build --path $(SUI_DIR) -e $(SUI_MOVE_ENV) --skip-fetch-latest-git-deps"; \
+		else \
+			SUI_BUILD_CMD="sui move build --path $(SUI_DIR) -e $(SUI_MOVE_ENV)"; \
+		fi; \
+		if sh -c "$$SUI_BUILD_CMD"; then \
 			echo "sui-build success"; \
 		elif [ "$(STRICT_SUI)" = "1" ]; then \
 			echo "sui-build failed (STRICT_SUI=1)"; \
@@ -91,9 +96,16 @@ sui-build:
 		echo "sui CLI not found; skip sui-build"; \
 	fi
 
-sui-test:
+check-sui: build-sui
+
+test-sui:
 	@if command -v sui >/dev/null 2>&1; then \
-		if sui move test --path $(SUI_DIR) --skip-fetch-latest-git-deps; then \
+		if sui move test --help 2>&1 | grep -q -- '--skip-fetch-latest-git-deps'; then \
+			SUI_TEST_CMD="sui move test --path $(SUI_DIR) -e $(SUI_MOVE_ENV) --skip-fetch-latest-git-deps"; \
+		else \
+			SUI_TEST_CMD="sui move test --path $(SUI_DIR) -e $(SUI_MOVE_ENV)"; \
+		fi; \
+		if sh -c "$$SUI_TEST_CMD"; then \
 			echo "sui-test success"; \
 		elif [ "$(STRICT_SUI)" = "1" ]; then \
 			echo "sui-test failed (STRICT_SUI=1)"; \
@@ -105,11 +117,11 @@ sui-test:
 		echo "sui CLI not found; skip sui-test"; \
 	fi
 
-demo-evm-sui:
-	cd $(RUST_WORKSPACE) && ./scripts/demo_evm_to_sui.sh
+deploy-evm:
+	cd $(RUST_WORKSPACE) && ./scripts/deploy_evm.sh $(ARGS)
 
-demo-sui-evm:
-	cd $(RUST_WORKSPACE) && ./scripts/demo_sui_to_evm.sh
+deploy-sui:
+	cd $(RUST_WORKSPACE) && ./scripts/deploy_sui.sh $(ARGS)
 
 run-solver:
 	cd $(RUST_WORKSPACE) && ./scripts/run_solver.sh
@@ -128,9 +140,3 @@ run-validator-send:
 
 run-explorer:
 	cd $(RUST_WORKSPACE) && ./scripts/run_explorer.sh
-
-deploy-evm:
-	cd $(RUST_WORKSPACE) && ./scripts/deploy_evm.sh
-
-deploy-sui:
-	cd $(RUST_WORKSPACE) && ./scripts/deploy_sui.sh

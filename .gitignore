@@ -17,14 +17,15 @@ contracts/sui/build/
 
 # Dotenv file
 .env
+.env.*.local
 
 # Dependencies
 lib/
 contracts/evm/lib/
 
-# Environment-specific files
-.env
-.env.*.local
-
 # Local data
 data/
+
+# Local sui publish artifacts / temp keys
+Pub.*.toml
+0x*.key

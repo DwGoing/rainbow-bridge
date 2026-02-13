@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use chain_adapters::{ChainAdapter, ChainKind, EvmAdapter, SuiAdapter};
+use chain_adapters::{ChainAdapter, EvmAdapter, SuiAdapter};
 use solver::{build_proposal, build_settlement_action};
 use std::env;
 use std::fs::OpenOptions;
@@ -7,6 +7,38 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use types::{IntentSubmissionRef, IntentSubmittedEvent};
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ChainConfigInput {
+    name: Option<String>,
+    chain_kind: String,
+    rpc_url: Option<String>,
+    endpoint_address: Option<String>,
+    package_id: Option<String>,
+    state_object_id: Option<String>,
+    module: Option<String>,
+    skip_rpc: Option<bool>,
+    chain_id: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ChainConfig {
+    name: String,
+    chain_kind: String,
+    rpc_url: Option<String>,
+    endpoint_address: Option<String>,
+    package_id: Option<String>,
+    state_object_id: Option<String>,
+    module: String,
+    skip_rpc: bool,
+    chain_id: Option<u64>,
+}
+
+struct ChainRuntime {
+    config: ChainConfig,
+    block_number: u64,
+    adapter: Option<Box<dyn ChainAdapter>>,
+}
 
 fn load_intent_event() -> Result<IntentSubmittedEvent> {
     let raw =
@@ -32,47 +64,120 @@ fn load_polled_intent_events() -> Result<Vec<IntentSubmittedEvent>> {
     Ok(events)
 }
 
-fn build_adapter_from_env(prefix: &str) -> Result<Box<dyn ChainAdapter>> {
-    let kind = env::var(format!("{prefix}_CHAIN_KIND")).unwrap_or_else(|_| "evm".to_string());
-    let rpc = env::var(format!("{prefix}_RPC_URL"))
-        .with_context(|| format!("missing {prefix}_RPC_URL for selected chain"))?;
+fn normalize_chain_config(_prefix: &str, idx: usize, input: ChainConfigInput) -> ChainConfig {
+    let kind = input.chain_kind.to_lowercase();
+    ChainConfig {
+        name: input
+            .name
+            .unwrap_or_else(|| format!("{}-{}", kind, idx + 1)),
+        chain_kind: kind,
+        rpc_url: input.rpc_url,
+        endpoint_address: input.endpoint_address,
+        package_id: input.package_id,
+        state_object_id: input.state_object_id,
+        module: input.module.unwrap_or_else(|| "bridge".to_string()),
+        skip_rpc: input.skip_rpc.unwrap_or(false),
+        chain_id: input.chain_id,
+    }
+}
 
-    match kind.as_str() {
+fn parse_legacy_chain_config(prefix: &str) -> Result<ChainConfig> {
+    let chain_kind = env::var(format!("{prefix}_CHAIN_KIND")).unwrap_or_else(|_| "evm".to_string());
+    let skip_rpc = env::var(format!("{prefix}_SKIP_RPC"))
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let rpc_url = env::var(format!("{prefix}_RPC_URL")).ok();
+
+    if !skip_rpc && rpc_url.is_none() {
+        return Err(anyhow!("missing {prefix}_RPC_URL for selected chain"));
+    }
+
+    let chain_id = env::var(format!("{prefix}_CHAIN_ID"))
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+
+    Ok(ChainConfig {
+        name: format!("{}_default", prefix.to_lowercase()),
+        chain_kind: chain_kind.to_lowercase(),
+        rpc_url,
+        endpoint_address: env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok(),
+        package_id: env::var(format!("{prefix}_PACKAGE_ID"))
+            .ok()
+            .or_else(|| env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok()),
+        state_object_id: env::var(format!("{prefix}_STATE_OBJECT_ID")).ok(),
+        module: env::var(format!("{prefix}_MODULE")).unwrap_or_else(|_| "bridge".to_string()),
+        skip_rpc,
+        chain_id,
+    })
+}
+
+fn load_chain_configs(prefix: &str) -> Result<Vec<ChainConfig>> {
+    let key = format!("{prefix}_CHAINS_JSON");
+    if let Ok(raw) = env::var(&key) {
+        let parsed: Vec<ChainConfigInput> =
+            serde_json::from_str(&raw).with_context(|| format!("invalid {key}"))?;
+        if parsed.is_empty() {
+            return Err(anyhow!("{key} cannot be empty"));
+        }
+
+        let mut out = Vec::with_capacity(parsed.len());
+        for (idx, cfg) in parsed.into_iter().enumerate() {
+            let normalized = normalize_chain_config(prefix, idx, cfg);
+            if !normalized.skip_rpc && normalized.rpc_url.is_none() {
+                return Err(anyhow!("{key}[{idx}] requires rpc_url when skip_rpc=false"));
+            }
+            out.push(normalized);
+        }
+        Ok(out)
+    } else {
+        Ok(vec![parse_legacy_chain_config(prefix)?])
+    }
+}
+
+fn build_adapter_from_config(cfg: &ChainConfig) -> Result<Box<dyn ChainAdapter>> {
+    let rpc = cfg
+        .rpc_url
+        .clone()
+        .ok_or_else(|| anyhow!("missing rpc_url for chain {}", cfg.name))?;
+    match cfg.chain_kind.as_str() {
         "evm" => {
-            let endpoint_address = env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok();
-            if let Some(addr) = endpoint_address {
+            if let Some(addr) = cfg.endpoint_address.as_deref() {
                 let parsed = addr
                     .parse()
-                    .with_context(|| format!("invalid {prefix}_ENDPOINT_ADDRESS"))?;
+                    .with_context(|| format!("invalid endpoint_address for {}", cfg.name))?;
                 Ok(Box::new(EvmAdapter::new_with_endpoint(rpc, parsed)))
             } else {
                 Ok(Box::new(EvmAdapter::new(rpc)))
             }
         }
-        "sui" => {
-            let package_id = env::var(format!("{prefix}_PACKAGE_ID"))
-                .ok()
-                .or_else(|| env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok());
-            let module =
-                env::var(format!("{prefix}_MODULE")).unwrap_or_else(|_| "bridge".to_string());
-            Ok(Box::new(SuiAdapter::new_with_module(
-                rpc, package_id, module,
-            )))
-        }
-        _ => Err(anyhow!(
-            "unsupported {prefix}_CHAIN_KIND '{kind}', expected 'evm' or 'sui'"
+        "sui" => Ok(Box::new(SuiAdapter::new_with_module(
+            rpc,
+            cfg.package_id.clone(),
+            cfg.module.clone(),
+        ))),
+        other => Err(anyhow!(
+            "unsupported chain_kind '{other}' for chain '{}'",
+            cfg.name
         )),
     }
 }
 
-fn chain_kind_from_env(prefix: &str) -> String {
-    env::var(format!("{prefix}_CHAIN_KIND")).unwrap_or_else(|_| "evm".to_string())
-}
+async fn build_runtime(cfg: ChainConfig) -> Result<ChainRuntime> {
+    if cfg.skip_rpc {
+        return Ok(ChainRuntime {
+            config: cfg,
+            block_number: 0,
+            adapter: None,
+        });
+    }
 
-fn skip_rpc(prefix: &str) -> bool {
-    env::var(format!("{prefix}_SKIP_RPC"))
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    let adapter = build_adapter_from_config(&cfg)?;
+    let block_number = adapter.get_block_number().await?;
+    Ok(ChainRuntime {
+        config: cfg,
+        block_number,
+        adapter: Some(adapter),
+    })
 }
 
 fn use_chain_polling() -> bool {
@@ -125,86 +230,134 @@ fn try_append_flow_event(kind: &str, intent_hash: &str, payload: serde_json::Val
     }
 }
 
+fn chain_meta(rt: &ChainRuntime) -> serde_json::Value {
+    serde_json::json!({
+        "name": rt.config.name,
+        "chain_kind": rt.config.chain_kind,
+        "chain_id": rt.config.chain_id,
+        "block_number": rt.block_number,
+        "skip_rpc": rt.config.skip_rpc,
+    })
+}
+
+fn select_source_runtime<'a>(
+    srcs: &'a [ChainRuntime],
+    intent: &IntentSubmittedEvent,
+) -> Result<&'a ChainRuntime> {
+    if let Some(found) = srcs
+        .iter()
+        .find(|s| s.config.chain_id == Some(intent.intent.src_chain_id))
+    {
+        return Ok(found);
+    }
+    srcs.first()
+        .ok_or_else(|| anyhow!("no source chain config available"))
+}
+
+fn select_destination_runtime<'a>(
+    dsts: &'a [ChainRuntime],
+    intent: &IntentSubmittedEvent,
+) -> Result<&'a ChainRuntime> {
+    if let Some(found) = dsts
+        .iter()
+        .find(|d| d.config.chain_id == Some(intent.intent.dst_chain_id))
+    {
+        return Ok(found);
+    }
+    dsts.first()
+        .ok_or_else(|| anyhow!("no destination chain config available"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (src_kind, src_block, src_adapter) = if skip_rpc("SOLVER_SRC") {
-        (chain_kind_from_env("SOLVER_SRC"), 0, None)
-    } else {
-        let adapter = build_adapter_from_env("SOLVER_SRC")?;
-        let kind = match adapter.kind() {
-            ChainKind::Evm => "evm".to_string(),
-            ChainKind::Sui => "sui".to_string(),
-        };
-        let block = adapter.get_block_number().await?;
-        (kind, block, Some(adapter))
-    };
-    let (dst_kind, dst_block) = if skip_rpc("SOLVER_DST") {
-        (chain_kind_from_env("SOLVER_DST"), 0)
-    } else {
-        let adapter = build_adapter_from_env("SOLVER_DST")?;
-        let kind = match adapter.kind() {
-            ChainKind::Evm => "evm".to_string(),
-            ChainKind::Sui => "sui".to_string(),
-        };
-        let block = adapter.get_block_number().await?;
-        (kind, block)
-    };
+    let src_configs = load_chain_configs("SOLVER_SRC")?;
+    let dst_configs = load_chain_configs("SOLVER_DST")?;
+
+    let mut src_runtimes = Vec::with_capacity(src_configs.len());
+    for cfg in src_configs {
+        src_runtimes.push(build_runtime(cfg).await?);
+    }
+
+    let mut dst_runtimes = Vec::with_capacity(dst_configs.len());
+    for cfg in dst_configs {
+        dst_runtimes.push(build_runtime(cfg).await?);
+    }
 
     if use_chain_polling() {
         let from_block: u64 = env::var("SOLVER_FROM_BLOCK")
             .unwrap_or_else(|_| "0".to_string())
             .parse()
             .context("invalid SOLVER_FROM_BLOCK")?;
-        let to_block: u64 = env::var("SOLVER_TO_BLOCK")
-            .unwrap_or_else(|_| src_block.to_string())
-            .parse()
-            .context("invalid SOLVER_TO_BLOCK")?;
+        let to_block_override: Option<u64> = env::var("SOLVER_TO_BLOCK")
+            .ok()
+            .map(|v| v.parse().context("invalid SOLVER_TO_BLOCK"))
+            .transpose()?;
 
         if enrich_polled_intents() {
-            let events = if let Some(src) = src_adapter.as_ref() {
-                src.fetch_intent_events(from_block, to_block).await?
-            } else {
-                load_polled_intent_events()?
-            };
-            for event in &events {
-                try_append_flow_event(
-                    "intent_submitted",
-                    &event.intent.intent_hash,
-                    serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
-                );
+            let mut by_source = Vec::new();
+            for src in &src_runtimes {
+                let to_block = to_block_override.unwrap_or(src.block_number);
+                let events = if let Some(adapter) = src.adapter.as_ref() {
+                    adapter.fetch_intent_events(from_block, to_block).await?
+                } else {
+                    load_polled_intent_events()?
+                };
+                for event in &events {
+                    try_append_flow_event(
+                        "intent_submitted",
+                        &event.intent.intent_hash,
+                        serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
+                    );
+                }
+                by_source.push(serde_json::json!({
+                    "source_chain": chain_meta(src),
+                    "from_block": from_block,
+                    "to_block": to_block,
+                    "intent_submitted_events": events,
+                }));
             }
+
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "source_chain_kind": src_kind,
-                    "destination_chain_kind": dst_kind,
-                    "source_block_number": src_block,
-                    "destination_block_number": dst_block,
-                    "intent_submitted_events": events
+                    "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                    "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                    "polled_intent_events_by_source": by_source,
                 }))
                 .context("failed to encode polled intent events")?
             );
         } else {
-            let refs = if let Some(src) = src_adapter.as_ref() {
-                src.fetch_intent_submissions(from_block, to_block).await?
-            } else {
-                load_polled_intent_refs()?
-            };
-            for r in &refs {
-                try_append_flow_event(
-                    "intent_submission_ref",
-                    &r.intent_hash,
-                    serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({})),
-                );
+            let mut by_source = Vec::new();
+            for src in &src_runtimes {
+                let to_block = to_block_override.unwrap_or(src.block_number);
+                let refs = if let Some(adapter) = src.adapter.as_ref() {
+                    adapter
+                        .fetch_intent_submissions(from_block, to_block)
+                        .await?
+                } else {
+                    load_polled_intent_refs()?
+                };
+                for r in &refs {
+                    try_append_flow_event(
+                        "intent_submission_ref",
+                        &r.intent_hash,
+                        serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({})),
+                    );
+                }
+                by_source.push(serde_json::json!({
+                    "source_chain": chain_meta(src),
+                    "from_block": from_block,
+                    "to_block": to_block,
+                    "intent_submission_refs": refs,
+                }));
             }
+
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "source_chain_kind": src_kind,
-                    "destination_chain_kind": dst_kind,
-                    "source_block_number": src_block,
-                    "destination_block_number": dst_block,
-                    "intent_submission_refs": refs
+                    "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                    "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                    "polled_intent_refs_by_source": by_source,
                 }))
                 .context("failed to encode polled intent submissions")?
             );
@@ -218,6 +371,9 @@ async fn main() -> Result<()> {
     let validator = env::var("VALIDATOR_ADDRESS").unwrap_or_else(|_| "validator-local".to_string());
     let amount_out = event.intent.min_dst_amount;
 
+    let src = select_source_runtime(&src_runtimes, &event)?;
+    let dst = select_destination_runtime(&dst_runtimes, &event)?;
+
     let proposal = build_proposal(&event, &solver, &validator, amount_out)?;
     try_append_flow_event(
         "intent_submitted",
@@ -229,21 +385,25 @@ async fn main() -> Result<()> {
         &proposal.intent_hash,
         serde_json::to_value(&proposal).unwrap_or_else(|_| serde_json::json!({})),
     );
-    let src_action_target = env::var("SOLVER_SRC_ENDPOINT_ADDRESS")
-        .ok()
-        .or_else(|| env::var("SOLVER_SRC_PACKAGE_ID").ok());
-    let src_state_object_id = env::var("SOLVER_SRC_STATE_OBJECT_ID").ok();
+
+    let src_action_target = src
+        .config
+        .endpoint_address
+        .as_deref()
+        .or(src.config.package_id.as_deref());
+
     let settlement_action = build_settlement_action(
-        &src_kind,
-        src_action_target.as_deref(),
-        src_state_object_id.as_deref(),
+        &src.config.chain_kind,
+        src_action_target,
+        src.config.state_object_id.as_deref(),
         &proposal,
     )?;
+
     let payload = serde_json::json!({
-        "source_chain_kind": src_kind,
-        "destination_chain_kind": dst_kind,
-        "source_block_number": src_block,
-        "destination_block_number": dst_block,
+        "source_chain": chain_meta(src),
+        "destination_chain": chain_meta(dst),
+        "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+        "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
         "proposal": proposal,
         "recommended_settlement_action": settlement_action
     });

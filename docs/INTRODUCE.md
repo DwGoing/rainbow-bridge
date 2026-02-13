@@ -88,12 +88,12 @@ make test
 Targeted commands:
 
 ```bash
-make rust-check
-make rust-test
-make evm-build
-make evm-test
-make sui-build
-make sui-test
+make check-rust
+make test-rust
+make build-evm
+make test-evm
+make build-sui
+make test-sui
 ```
 
 ## 6. Environment and Runtime
@@ -111,10 +111,8 @@ Important validator runtime knobs:
 - `VALIDATOR_SRC_PACKAGE_ID`
 - `VALIDATOR_SRC_STATE_OBJECT_ID`
 - `VALIDATOR_SUI_CLI_BIN`
-
-Offline demo commands:
-- `make demo-evm-sui`
-- `make demo-sui-evm`
+- `SOLVER_SRC_CHAINS_JSON` / `SOLVER_DST_CHAINS_JSON` (multi-chain, overrides legacy single-chain vars)
+- `VALIDATOR_SRC_CHAINS_JSON` / `VALIDATOR_DST_CHAINS_JSON` (multi-chain, overrides legacy single-chain vars)
 
 Real chain runtime commands:
 - `make run-solver`
@@ -125,6 +123,9 @@ Real chain runtime commands:
 - `make run-validator-send`
 - `make deploy-evm`
 - `make deploy-sui`
+
+Deployment note:
+- deploy scripts read RPC/private-key/sender from command arguments, not from `.env`.
 
 ## 7. Project Value
 

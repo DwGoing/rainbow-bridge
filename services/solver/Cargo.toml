@@ -7,6 +7,7 @@ edition = "2024"
 anyhow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 types = { path = "../../crates/types" }
 chain-adapters = { path = "../../crates/chain-adapters" }
 alloy = { version = "1", features = ["full"] }

@@ -18,6 +18,10 @@
 1. 离线演示（推荐先跑通）
 2. 真实链演示（基于 `.env` 配置 RPC 和地址）
 
+多链说明：
+1. `solver` 和 `validator` 现已支持同时配置多个 `src` / `dst` 链。
+2. 使用 `*_SRC_CHAINS_JSON` 和 `*_DST_CHAINS_JSON` 时，会覆盖旧的单链 `*_SRC_*` / `*_DST_*` 键。
+
 ## 2. 前置依赖
 
 请先确保本机可用以下工具：
@@ -45,25 +49,63 @@ make test
 2. Foundry tests 全通过
 3. Sui Move tests 全通过
 
-## 3.1 合约部署脚本（可选）
+## 3.1 启动本地节点（EVM + Sui）
+
+建议先启动本地链，再做部署与联调。
+
+### 3.1.1 启动 EVM 本地节点（Anvil）
+
+新开终端 A：
+
+```bash
+anvil --host 127.0.0.1 --port 8545 --chain-id 31337
+```
+
+健康检查（新开终端）：
+
+```bash
+cast chain-id --rpc-url http://127.0.0.1:8545
+```
+
+### 3.1.2 启动 Sui 本地节点（localnet）
+
+新开终端 B：
+
+```bash
+sui start --with-faucet --force-regenesis
+```
+
+初始化/切换本地环境（首次或环境缺失时执行）：
+
+```bash
+sui client new-env --alias localnet --rpc http://127.0.0.1:9000
+sui client switch --env localnet
+```
+
+健康检查（新开终端）：
+
+```bash
+sui client chain-identifier
+```
+
+## 3.2 合约部署脚本（可选）
 
 本仓库已提供部署脚本：
-1. `make deploy-evm`
-2. `make deploy-sui`
+1. `make deploy-evm ARGS="--rpc-url ... --private-key ... [--owner ...] [--chain-id ...]"`
+2. `make deploy-sui ARGS="[--rpc-url ... --private-key ...] [--build-env ...] [--sender ...] [--gas-budget ...]"`
 
-部署前在 `.env` 配置：
-1. `DEPLOY_EVM_RPC_URL`
-2. `DEPLOYER_PRIVATE_KEY`
-3. `DEPLOY_OWNER`（可留空，脚本会从私钥推导）
-4. `DEPLOY_CHAIN_ID`（可留空，脚本会从 RPC 读取）
-5. `DEPLOY_SUI_PACKAGE_PATH`（默认 `contracts/sui`）
-6. `DEPLOY_SUI_GAS_BUDGET`
-7. `DEPLOY_SUI_SENDER`（可选）
-8. `DEPLOY_SUI_MODE`（`auto|publish|test-publish`，默认 `auto`）
+注意：部署脚本不读取 `.env`，所有 RPC/PK/sender 等信息都通过命令参数传入。
 
 执行后产物：
 1. `data/deploy/evm.latest.json`
 2. `data/deploy/sui.latest.json`
+
+本地链部署示例：
+
+```bash
+make deploy-evm ARGS="--rpc-url http://127.0.0.1:8545 --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 --chain-id 31337"
+make deploy-sui ARGS="--rpc-url http://127.0.0.1:9000 --private-key suiprivkey... --build-env localnet --gas-budget 100000000"
+```
 
 ## 4. 离线完整流程演示（推荐）
 
@@ -86,19 +128,25 @@ make run-explorer
 默认监听：
 - `http://127.0.0.1:8080`
 
-### 4.3 运行跨链流程 Demo
+### 4.3 运行跨链流程
 
-新开终端 B，执行任一或全部：
+新开终端 B，启动 solver：
 
 ```bash
-make demo-sui-evm
-make demo-evm-sui
+make run-solver
+```
+
+新开终端 C，启动 validator（建议先用 off 或 dry-run）：
+
+```bash
+make run-validator-off
+# 或
+make run-validator-dry
 ```
 
 说明：
-1. `demo-sui-evm` 会同时跑 `solver` + `validator`
-2. `demo-evm-sui` 主要演示 `solver` 提案输出
-3. 两者都会往 `FLOW_EVENT_LOG_PATH` 写事件（默认 `data/flow-events.jsonl`）
+1. `run-solver` 与 `run-validator*` 都会往 `FLOW_EVENT_LOG_PATH` 写事件（默认 `data/flow-events.jsonl`）。
+2. 建议先用 `off`/`dry-run` 验证流程，再切换 `make run-validator-send`。
 
 ### 4.4 查看 Explorer 页面
 
@@ -251,10 +299,11 @@ make run-explorer
 
 ### Q2: `sui` 命令不存在
 
-安装 Sui CLI 或先用离线 demo：
+安装 Sui CLI，或先只运行 Rust/EVM 相关流程：
 
 ```bash
-make demo-sui-evm
+make test-rust
+make test-evm
 ```
 
 ### Q3: 没有 flow 数据

@@ -40,16 +40,16 @@ make test
 ### Rust
 
 ```bash
-make rust-check
-make rust-test
-make rust-fmt
+make check-rust
+make test-rust
+make fmt-rust
 ```
 
 ### EVM (Foundry)
 
 ```bash
-make evm-build
-make evm-test
+make build-evm
+make test-evm
 ```
 
 You can also run Foundry directly from repo root now:
@@ -62,14 +62,14 @@ forge test --offline
 Deploy contracts:
 
 ```bash
-make deploy-evm
+make deploy-evm ARGS="--rpc-url http://127.0.0.1:8545 --private-key 0x..."
 ```
 
 ### Sui (Move)
 
 ```bash
-make sui-build
-make sui-test
+make build-sui
+make test-sui
 ```
 
 If `sui` CLI is not installed, these targets are skipped with a message.
@@ -77,27 +77,15 @@ If Sui git dependencies cannot be fetched in restricted environments, targets co
 Use strict mode to fail fast:
 
 ```bash
-STRICT_SUI=1 make sui-build
-STRICT_SUI=1 make sui-test
+STRICT_SUI=1 make build-sui
+STRICT_SUI=1 make test-sui
 ```
 
 Publish Move package:
 
 ```bash
-make deploy-sui
+make deploy-sui ARGS="--rpc-url https://fullnode.testnet.sui.io:443 --private-key suiprivkey... --gas-budget 200000000"
 ```
-
-### Cross-chain demo
-
-Run offline demo flows from repo root:
-
-```bash
-make demo-evm-sui
-make demo-sui-evm
-```
-
-`demo-sui-evm` defaults to `VALIDATOR_TX_MODE=off`.  
-To try Sui CLI execution path, set `VALIDATOR_TX_MODE=dry-run` or `send` and provide Sui CLI wallet context.
 
 ### Real chain run
 

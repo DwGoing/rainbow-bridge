@@ -9,3 +9,6 @@ bridge = "0x0"
 
 [dependencies]
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
+
+[environments]
+localnet = "6b2429dc"
