@@ -45,6 +45,26 @@ make test
 2. Foundry tests 全通过
 3. Sui Move tests 全通过
 
+## 3.1 合约部署脚本（可选）
+
+本仓库已提供部署脚本：
+1. `make deploy-evm`
+2. `make deploy-sui`
+
+部署前在 `.env` 配置：
+1. `DEPLOY_EVM_RPC_URL`
+2. `DEPLOYER_PRIVATE_KEY`
+3. `DEPLOY_OWNER`（可留空，脚本会从私钥推导）
+4. `DEPLOY_CHAIN_ID`（可留空，脚本会从 RPC 读取）
+5. `DEPLOY_SUI_PACKAGE_PATH`（默认 `contracts/sui`）
+6. `DEPLOY_SUI_GAS_BUDGET`
+7. `DEPLOY_SUI_SENDER`（可选）
+8. `DEPLOY_SUI_MODE`（`auto|publish|test-publish`，默认 `auto`）
+
+执行后产物：
+1. `data/deploy/evm.latest.json`
+2. `data/deploy/sui.latest.json`
+
 ## 4. 离线完整流程演示（推荐）
 
 该流程不依赖真实 RPC，适合本地快速验证全链路与 Explorer。

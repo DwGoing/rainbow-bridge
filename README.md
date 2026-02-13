@@ -59,6 +59,12 @@ forge build
 forge test --offline
 ```
 
+Deploy contracts:
+
+```bash
+make deploy-evm
+```
+
 ### Sui (Move)
 
 ```bash
@@ -73,6 +79,12 @@ Use strict mode to fail fast:
 ```bash
 STRICT_SUI=1 make sui-build
 STRICT_SUI=1 make sui-test
+```
+
+Publish Move package:
+
+```bash
+make deploy-sui
 ```
 
 ### Cross-chain demo

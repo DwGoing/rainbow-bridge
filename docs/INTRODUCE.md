@@ -123,6 +123,8 @@ Real chain runtime commands:
 - `make run-validator-off`
 - `make run-validator-dry`
 - `make run-validator-send`
+- `make deploy-evm`
+- `make deploy-sui`
 
 ## 7. Project Value
 

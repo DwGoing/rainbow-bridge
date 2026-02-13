@@ -18,9 +18,13 @@ contracts/sui/build/
 # Dotenv file
 .env
 
-# Explorer event logs
-data/*.jsonl
-
 # Dependencies
 lib/
 contracts/evm/lib/
+
+# Environment-specific files
+.env
+.env.*.local
+
+# Local data
+data/
