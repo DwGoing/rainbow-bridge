@@ -2147,7 +2147,9 @@ dependencies = [
  "alloy",
  "anyhow",
  "async-trait",
+ "move-core-types",
  "serde",
+ "serde_json",
  "sui-sdk",
  "tokio",
  "types",
@@ -7984,6 +7986,7 @@ dependencies = [
 name = "solver"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "chain-adapters",
  "serde_json",

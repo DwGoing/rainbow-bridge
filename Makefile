@@ -7,6 +7,9 @@ STRICT_SUI ?= 0
 .PHONY: rust-check rust-test rust-fmt
 .PHONY: evm-build evm-test
 .PHONY: sui-build sui-test
+.PHONY: demo-evm-sui demo-sui-evm
+.PHONY: run-solver run-validator
+.PHONY: run-validator-off run-validator-dry run-validator-send
 
 help:
 	@echo "Rainbow Bridge monorepo tasks"
@@ -29,6 +32,17 @@ help:
 	@echo "Sui:"
 	@echo "  make sui-build"
 	@echo "  make sui-test"
+	@echo ""
+	@echo "Demos:"
+	@echo "  make demo-evm-sui"
+	@echo "  make demo-sui-evm"
+	@echo ""
+	@echo "Runtime:"
+	@echo "  make run-solver"
+	@echo "  make run-validator"
+	@echo "  make run-validator-off"
+	@echo "  make run-validator-dry"
+	@echo "  make run-validator-send"
 
 check: rust-check evm-build sui-build
 
@@ -83,3 +97,24 @@ sui-test:
 	else \
 		echo "sui CLI not found; skip sui-test"; \
 	fi
+
+demo-evm-sui:
+	cd $(RUST_WORKSPACE) && ./scripts/demo_evm_to_sui.sh
+
+demo-sui-evm:
+	cd $(RUST_WORKSPACE) && ./scripts/demo_sui_to_evm.sh
+
+run-solver:
+	cd $(RUST_WORKSPACE) && ./scripts/run_solver.sh
+
+run-validator:
+	cd $(RUST_WORKSPACE) && ./scripts/run_validator.sh
+
+run-validator-off:
+	cd $(RUST_WORKSPACE) && ./scripts/run_validator.sh --mode off
+
+run-validator-dry:
+	cd $(RUST_WORKSPACE) && ./scripts/run_validator.sh --mode dry-run
+
+run-validator-send:
+	cd $(RUST_WORKSPACE) && ./scripts/run_validator.sh --mode send

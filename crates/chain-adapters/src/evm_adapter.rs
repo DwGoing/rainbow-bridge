@@ -155,11 +155,10 @@ impl ChainAdapter for EvmAdapter {
         for submission in submissions {
             let hash = B256::from_str(&submission.intent_hash)
                 .map_err(|e| anyhow!("invalid intent hash {}: {e}", submission.intent_hash))?;
-            let intent = endpoint_view
-                .intents(hash)
-                .call()
-                .await
-                .map_err(|e| anyhow!("failed to fetch intent {}: {e}", submission.intent_hash))?;
+            let intent =
+                endpoint_view.intents(hash).call().await.map_err(|e| {
+                    anyhow!("failed to fetch intent {}: {e}", submission.intent_hash)
+                })?;
 
             events.push(IntentSubmittedEvent {
                 intent: SwapIntent {

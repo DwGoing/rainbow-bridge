@@ -75,6 +75,49 @@ STRICT_SUI=1 make sui-build
 STRICT_SUI=1 make sui-test
 ```
 
+### Cross-chain demo
+
+Run offline demo flows from repo root:
+
+```bash
+make demo-evm-sui
+make demo-sui-evm
+```
+
+`demo-sui-evm` defaults to `VALIDATOR_TX_MODE=off`.  
+To try Sui CLI execution path, set `VALIDATOR_TX_MODE=dry-run` or `send` and provide Sui CLI wallet context.
+
+### Real chain run
+
+1. Copy env template and fill RPC / addresses:
+
+```bash
+cp .env.example .env
+```
+
+Optional profiles:
+
+```bash
+cp .env.testnet.example .env
+# or
+cp .env.mainnet.example .env
+```
+
+2. Run services with env:
+
+```bash
+make run-solver
+make run-validator
+```
+
+Validator mode shortcuts:
+
+```bash
+make run-validator-off
+make run-validator-dry
+make run-validator-send
+```
+
 ## Notes
 
 - Rust workspace is still defined in root `Cargo.toml`.

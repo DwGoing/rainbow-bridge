@@ -11,3 +11,5 @@ async-trait = "0.1"
 alloy = { version = "1", features = ["full"] }
 sui_sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk" }
 types = { path = "../types" }
+serde_json.workspace = true
+move-core-types = { git = "https://github.com/mystenlabs/sui" }

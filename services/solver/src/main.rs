@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chain_adapters::{ChainAdapter, ChainKind, EvmAdapter, SuiAdapter};
+use solver::{build_proposal, build_settlement_action};
 use std::env;
-use solver::build_proposal;
 use types::{IntentSubmissionRef, IntentSubmittedEvent};
 
 fn load_intent_event() -> Result<IntentSubmittedEvent> {
@@ -45,7 +45,16 @@ fn build_adapter_from_env(prefix: &str) -> Result<Box<dyn ChainAdapter>> {
                 Ok(Box::new(EvmAdapter::new(rpc)))
             }
         }
-        "sui" => Ok(Box::new(SuiAdapter::new(rpc))),
+        "sui" => {
+            let package_id = env::var(format!("{prefix}_PACKAGE_ID"))
+                .ok()
+                .or_else(|| env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok());
+            let module =
+                env::var(format!("{prefix}_MODULE")).unwrap_or_else(|_| "bridge".to_string());
+            Ok(Box::new(SuiAdapter::new_with_module(
+                rpc, package_id, module,
+            )))
+        }
         _ => Err(anyhow!(
             "unsupported {prefix}_CHAIN_KIND '{kind}', expected 'evm' or 'sui'"
         )),
@@ -150,19 +159,32 @@ async fn main() -> Result<()> {
 
     let event = load_intent_event()?;
     let solver = env::var("SOLVER_ADDRESS").unwrap_or_else(|_| "solver-local".to_string());
-    let validator =
-        env::var("VALIDATOR_ADDRESS").unwrap_or_else(|_| "validator-local".to_string());
+    let validator = env::var("VALIDATOR_ADDRESS").unwrap_or_else(|_| "validator-local".to_string());
     let amount_out = event.intent.min_dst_amount;
 
     let proposal = build_proposal(&event, &solver, &validator, amount_out)?;
+    let src_action_target = env::var("SOLVER_SRC_ENDPOINT_ADDRESS")
+        .ok()
+        .or_else(|| env::var("SOLVER_SRC_PACKAGE_ID").ok());
+    let src_state_object_id = env::var("SOLVER_SRC_STATE_OBJECT_ID").ok();
+    let settlement_action = build_settlement_action(
+        &src_kind,
+        src_action_target.as_deref(),
+        src_state_object_id.as_deref(),
+        &proposal,
+    )?;
     let payload = serde_json::json!({
         "source_chain_kind": src_kind,
         "destination_chain_kind": dst_kind,
         "source_block_number": src_block,
         "destination_block_number": dst_block,
-        "proposal": proposal
+        "proposal": proposal,
+        "recommended_settlement_action": settlement_action
     });
-    println!("{}", serde_json::to_string_pretty(&payload).context("failed to encode proposal payload")?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&payload).context("failed to encode proposal payload")?
+    );
 
     Ok(())
 }

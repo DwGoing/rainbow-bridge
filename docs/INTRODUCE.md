@@ -55,6 +55,7 @@ The project is organized as a monorepo and currently includes three layers:
   - JSON-driven mode
   - chain polling mode
   - optional enriched event mode
+  - Sui source-chain event polling (by package/module)
 - `validator` supports:
   - decision planning (`Challenge / Finalize / Hold`)
   - ABI-encoded tx payload generation
@@ -62,6 +63,7 @@ The project is organized as a monorepo and currently includes three layers:
     - `off`
     - `dry-run` (`estimate_gas`)
     - `send` (signed tx; optional receipt wait)
+  - Sui source-chain execution in `dry-run/send` via `sui client call`
 
 ### Sui
 - Move package scaffold exists in `contracts/sui`.
@@ -106,6 +108,20 @@ Important validator runtime knobs:
 - `VALIDATOR_TX_PRIVATE_KEY`
 - `VALIDATOR_TX_WAIT_RECEIPT=true|false`
 - `VALIDATOR_TX_RECEIPT_TIMEOUT_SECS`
+- `VALIDATOR_SRC_PACKAGE_ID`
+- `VALIDATOR_SRC_STATE_OBJECT_ID`
+- `VALIDATOR_SUI_CLI_BIN`
+
+Offline demo commands:
+- `make demo-evm-sui`
+- `make demo-sui-evm`
+
+Real chain runtime commands:
+- `make run-solver`
+- `make run-validator`
+- `make run-validator-off`
+- `make run-validator-dry`
+- `make run-validator-send`
 
 ## 7. Project Value
 

@@ -80,6 +80,67 @@ pub fn encode_settlement_call(method: &str, intent_hash: &str) -> Result<String>
     Ok(format!("0x{}", alloy::hex::encode(bytes)))
 }
 
+pub fn build_settlement_action_payload(
+    source_chain_kind: &str,
+    source_target: &str,
+    source_state_object_id: Option<&str>,
+    method: &str,
+    intent_hash: &str,
+    now_ts: Option<u64>,
+) -> Result<serde_json::Value> {
+    match source_chain_kind {
+        "evm" => {
+            let data = encode_settlement_call(method, intent_hash)?;
+            Ok(serde_json::json!({
+                "chain_kind": "evm",
+                "to": source_target,
+                "method": method,
+                "args": [intent_hash],
+                "data": data
+            }))
+        }
+        "sui" => {
+            let function = match method {
+                "challengeSettlement" => "challenge_settlement",
+                "finalizeSettlement" => "finalize_settlement",
+                _ => return Err(anyhow!("unsupported settlement method '{method}' for sui")),
+            };
+            let state_object_id = source_state_object_id.ok_or_else(|| {
+                anyhow!("missing source state object id for sui settlement action")
+            })?;
+            let intent_hash_bytes = hex_to_u8_vec(intent_hash)?;
+            let ts = now_ts.unwrap_or(0);
+            let args = match method {
+                "challengeSettlement" => {
+                    serde_json::json!([state_object_id, "0x0", intent_hash_bytes, ts])
+                }
+                "finalizeSettlement" => serde_json::json!([state_object_id, intent_hash_bytes, ts]),
+                _ => unreachable!(),
+            };
+            Ok(serde_json::json!({
+                "chain_kind": "sui",
+                "package": source_target,
+                "module": "bridge",
+                "function": function,
+                "type_args": [],
+                "args": args
+            }))
+        }
+        other => Err(anyhow!("unsupported source chain kind '{other}'")),
+    }
+}
+
+fn hex_to_u8_vec(hex: &str) -> Result<Vec<u8>> {
+    let normalized = hex.strip_prefix("0x").unwrap_or(hex);
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+    if normalized.len() % 2 != 0 {
+        return Err(anyhow!("hex string has odd length: {hex}"));
+    }
+    alloy::hex::decode(normalized).map_err(|e| anyhow!("invalid hex string '{hex}': {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +193,21 @@ mod tests {
 
         assert!(challenge.starts_with("0x3b693c67"));
         assert!(finalize.starts_with("0x19f3b062"));
+    }
+
+    #[test]
+    fn build_sui_action_payload() {
+        let payload = build_settlement_action_payload(
+            "sui",
+            "0x42",
+            Some("0xstate"),
+            "challengeSettlement",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some(123),
+        )
+        .unwrap();
+        assert_eq!(payload["chain_kind"], "sui");
+        assert_eq!(payload["function"], "challenge_settlement");
+        assert_eq!(payload["args"][0], "0xstate");
     }
 }

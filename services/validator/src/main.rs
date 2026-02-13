@@ -6,10 +6,14 @@ use anyhow::{Context, Result, anyhow};
 use chain_adapters::{ChainAdapter, ChainKind, EvmAdapter, SuiAdapter};
 use std::env;
 use std::str::FromStr;
-use tokio::time::{Duration, timeout};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::process::Command;
+use tokio::time::{Duration, timeout};
 use types::{SettlementProposal, SettlementProposalRef};
-use validator::{SettlementActionKind, encode_settlement_call, plan_settlement_action, validate_proposal};
+use validator::{
+    SettlementActionKind, build_settlement_action_payload, encode_settlement_call,
+    plan_settlement_action, validate_proposal,
+};
 
 fn now_unix() -> Result<u64> {
     Ok(SystemTime::now()
@@ -51,7 +55,16 @@ fn build_adapter_from_env(prefix: &str) -> Result<Box<dyn ChainAdapter>> {
                 Ok(Box::new(EvmAdapter::new(rpc)))
             }
         }
-        "sui" => Ok(Box::new(SuiAdapter::new(rpc))),
+        "sui" => {
+            let package_id = env::var(format!("{prefix}_PACKAGE_ID"))
+                .ok()
+                .or_else(|| env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok());
+            let module =
+                env::var(format!("{prefix}_MODULE")).unwrap_or_else(|_| "bridge".to_string());
+            Ok(Box::new(SuiAdapter::new_with_module(
+                rpc, package_id, module,
+            )))
+        }
         _ => Err(anyhow!(
             "unsupported {prefix}_CHAIN_KIND '{kind}', expected 'evm' or 'sui'"
         )),
@@ -80,30 +93,39 @@ fn challenge_window_secs() -> Result<u64> {
 }
 
 fn settlement_call_payload(
+    source_chain_kind: &str,
     endpoint: Option<&str>,
+    state_object_id: Option<&str>,
     method: &str,
-    intent_hash: &str
+    intent_hash: &str,
+    now_ts: Option<u64>,
 ) -> Result<serde_json::Value> {
-    let data = encode_settlement_call(method, intent_hash)?;
-
-    Ok(serde_json::json!({
-        "to": endpoint.unwrap_or(""),
-        "method": method,
-        "args": [intent_hash],
-        "data": data
-    }))
+    build_settlement_action_payload(
+        source_chain_kind,
+        endpoint.unwrap_or(""),
+        state_object_id,
+        method,
+        intent_hash,
+        now_ts,
+    )
 }
 
 fn settlement_call_payload_fallback(
+    source_chain_kind: &str,
     endpoint: Option<&str>,
+    state_object_id: Option<&str>,
     method: &str,
     intent_hash: &str,
+    now_ts: Option<u64>,
     err: &str,
 ) -> serde_json::Value {
     serde_json::json!({
+        "chain_kind": source_chain_kind,
         "to": endpoint.unwrap_or(""),
+        "state_object_id": state_object_id.unwrap_or(""),
         "method": method,
         "args": [intent_hash],
+        "now_ts": now_ts.unwrap_or(0),
         "data": "",
         "encode_error": err
     })
@@ -122,6 +144,16 @@ struct ExecutableTx {
     method: String,
     to: Address,
     data: Bytes,
+}
+
+#[derive(Debug, Clone)]
+struct ExecutableSuiCall {
+    intent_hash: String,
+    method: String,
+    package: String,
+    module: String,
+    function: String,
+    args: Vec<serde_json::Value>,
 }
 
 fn tx_mode() -> TxMode {
@@ -155,7 +187,68 @@ fn wait_receipt_timeout_secs() -> u64 {
         .unwrap_or(120)
 }
 
-async fn execute_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde_json::Value>> {
+fn json_arg_to_cli_literal(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Array(items) => {
+            let mut out = String::from("[");
+            for (i, it) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&json_arg_to_cli_literal(it));
+            }
+            out.push(']');
+            out
+        }
+        _ => v.to_string(),
+    }
+}
+
+fn find_line_value<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix(prefix).map(str::trim))
+}
+
+fn parse_sui_digest(stdout: &str, stderr: &str) -> Option<String> {
+    let from_stdout = find_line_value(stdout, "Transaction Digest:")
+        .or_else(|| find_line_value(stdout, "Digest:"))
+        .map(ToString::to_string);
+    if from_stdout.is_some() {
+        return from_stdout;
+    }
+    find_line_value(stderr, "Transaction Digest:")
+        .or_else(|| find_line_value(stderr, "Digest:"))
+        .map(ToString::to_string)
+}
+
+fn parse_sui_success(stdout: &str, stderr: &str) -> Option<bool> {
+    let lower_out = stdout.to_ascii_lowercase();
+    if lower_out.contains("execution status: success")
+        || lower_out.contains("\"status\":\"success\"")
+        || lower_out.contains("\"status\": \"success\"")
+    {
+        return Some(true);
+    }
+    if lower_out.contains("execution status: failure")
+        || lower_out.contains("\"status\":\"failure\"")
+        || lower_out.contains("\"status\": \"failure\"")
+    {
+        return Some(false);
+    }
+
+    let lower_err = stderr.to_ascii_lowercase();
+    if lower_err.contains("execution status: success") {
+        return Some(true);
+    }
+    if lower_err.contains("execution status: failure") {
+        return Some(false);
+    }
+    None
+}
+
+async fn execute_evm_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde_json::Value>> {
     if mode == TxMode::Off {
         return Ok(Vec::new());
     }
@@ -194,7 +287,8 @@ async fn execute_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde_jso
         TxMode::Send => {
             let pk = env::var("VALIDATOR_TX_PRIVATE_KEY")
                 .context("VALIDATOR_TX_MODE=send requires VALIDATOR_TX_PRIVATE_KEY")?;
-            let signer: PrivateKeySigner = pk.parse().context("invalid VALIDATOR_TX_PRIVATE_KEY")?;
+            let signer: PrivateKeySigner =
+                pk.parse().context("invalid VALIDATOR_TX_PRIVATE_KEY")?;
             let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
 
             let mut results = Vec::with_capacity(txs.len());
@@ -257,6 +351,85 @@ async fn execute_txs(mode: TxMode, txs: &[ExecutableTx]) -> Result<Vec<serde_jso
     }
 }
 
+async fn execute_sui_calls(
+    mode: TxMode,
+    calls: &[ExecutableSuiCall],
+) -> Result<Vec<serde_json::Value>> {
+    if mode == TxMode::Off {
+        return Ok(Vec::new());
+    }
+
+    let cli_bin = env::var("VALIDATOR_SUI_CLI_BIN").unwrap_or_else(|_| "sui".to_string());
+    let sender = env::var("VALIDATOR_SUI_SENDER").ok();
+    let gas_budget = env::var("VALIDATOR_SUI_GAS_BUDGET")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10_000_000);
+
+    let mut results = Vec::with_capacity(calls.len());
+    for call in calls {
+        let mut cmd = Command::new(&cli_bin);
+        cmd.arg("client")
+            .arg("call")
+            .arg("--package")
+            .arg(&call.package)
+            .arg("--module")
+            .arg(&call.module)
+            .arg("--function")
+            .arg(&call.function)
+            .arg("--gas-budget")
+            .arg(gas_budget.to_string());
+
+        if let Some(s) = sender.as_ref() {
+            cmd.arg("--sender").arg(s);
+        }
+
+        if !call.args.is_empty() {
+            cmd.arg("--args");
+            for arg in &call.args {
+                cmd.arg(json_arg_to_cli_literal(arg));
+            }
+        }
+
+        if mode == TxMode::DryRun {
+            cmd.arg("--dry-run");
+        }
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| anyhow!("failed to execute sui cli: {e}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let tx_digest = parse_sui_digest(&stdout, &stderr);
+        let success = parse_sui_success(&stdout, &stderr);
+        if output.status.success() {
+            results.push(serde_json::json!({
+                "intent_hash": call.intent_hash,
+                "method": call.method,
+                "status": if mode == TxMode::DryRun { "simulated" } else { "sent" },
+                "tx_digest": tx_digest,
+                "success": success,
+                "exit_code": output.status.code(),
+                "output": stdout
+            }));
+        } else {
+            results.push(serde_json::json!({
+                "intent_hash": call.intent_hash,
+                "method": call.method,
+                "status": if mode == TxMode::DryRun { "simulation_failed" } else { "send_failed" },
+                "tx_digest": tx_digest,
+                "success": success,
+                "exit_code": output.status.code(),
+                "error": stderr
+            }));
+        }
+    }
+
+    Ok(results)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let ts = now_unix()?;
@@ -299,45 +472,65 @@ async fn main() -> Result<()> {
         };
         let now = ts;
         let window = challenge_window_secs()?;
-        let endpoint = env::var("VALIDATOR_SRC_ENDPOINT_ADDRESS").ok();
+        let endpoint = env::var("VALIDATOR_SRC_ENDPOINT_ADDRESS")
+            .ok()
+            .or_else(|| env::var("VALIDATOR_SRC_PACKAGE_ID").ok());
+        let state_object_id = env::var("VALIDATOR_SRC_STATE_OBJECT_ID").ok();
         let mut executable_txs = Vec::<ExecutableTx>::new();
+        let mut executable_sui_calls = Vec::<ExecutableSuiCall>::new();
         let mut decisions = Vec::with_capacity(proposals.len());
         for p in &proposals {
-                let plan = plan_settlement_action(p, now, window);
-                let tx_payload = match plan.action {
-                    SettlementActionKind::Challenge => Some(
-                        settlement_call_payload(
+            let plan = plan_settlement_action(p, now, window);
+            let tx_payload = match plan.action {
+                SettlementActionKind::Challenge => Some(
+                    settlement_call_payload(
+                        &src_kind,
+                        endpoint.as_deref(),
+                        state_object_id.as_deref(),
+                        "challengeSettlement",
+                        &p.intent_hash,
+                        Some(now),
+                    )
+                    .unwrap_or_else(|e| {
+                        settlement_call_payload_fallback(
+                            &src_kind,
                             endpoint.as_deref(),
+                            state_object_id.as_deref(),
                             "challengeSettlement",
                             &p.intent_hash,
+                            Some(now),
+                            &e.to_string(),
                         )
-                        .unwrap_or_else(|e| {
-                            settlement_call_payload_fallback(
-                                endpoint.as_deref(),
-                                "challengeSettlement",
-                                &p.intent_hash,
-                                &e.to_string(),
-                            )
-                        }),
-                    ),
-                    SettlementActionKind::Finalize => Some(
-                        settlement_call_payload(
+                    }),
+                ),
+                SettlementActionKind::Finalize => Some(
+                    settlement_call_payload(
+                        &src_kind,
+                        endpoint.as_deref(),
+                        state_object_id.as_deref(),
+                        "finalizeSettlement",
+                        &p.intent_hash,
+                        Some(now),
+                    )
+                    .unwrap_or_else(|e| {
+                        settlement_call_payload_fallback(
+                            &src_kind,
                             endpoint.as_deref(),
+                            state_object_id.as_deref(),
                             "finalizeSettlement",
                             &p.intent_hash,
+                            Some(now),
+                            &e.to_string(),
                         )
-                        .unwrap_or_else(|e| {
-                            settlement_call_payload_fallback(
-                                endpoint.as_deref(),
-                                "finalizeSettlement",
-                                &p.intent_hash,
-                                &e.to_string(),
-                            )
-                        }),
-                    ),
-                    SettlementActionKind::Hold => None,
-                };
-                if matches!(plan.action, SettlementActionKind::Challenge | SettlementActionKind::Finalize) {
+                    }),
+                ),
+                SettlementActionKind::Hold => None,
+            };
+            if matches!(
+                plan.action,
+                SettlementActionKind::Challenge | SettlementActionKind::Finalize
+            ) {
+                if src_kind == "evm" {
                     if let Some(to_str) = endpoint.as_deref() {
                         if let Ok(to_addr) = Address::from_str(to_str) {
                             let method = match plan.action {
@@ -346,7 +539,9 @@ async fn main() -> Result<()> {
                                 SettlementActionKind::Hold => "hold",
                             };
                             if let Ok(encoded) = encode_settlement_call(method, &p.intent_hash) {
-                                if let Ok(raw) = alloy::hex::decode(encoded.trim_start_matches("0x")) {
+                                if let Ok(raw) =
+                                    alloy::hex::decode(encoded.trim_start_matches("0x"))
+                                {
                                     let data = Bytes::from(raw);
                                     executable_txs.push(ExecutableTx {
                                         intent_hash: p.intent_hash.clone(),
@@ -358,24 +553,49 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                } else if src_kind == "sui" {
+                    if let Some(payload) = tx_payload.as_ref() {
+                        let package = payload["package"].as_str().unwrap_or_default().to_string();
+                        let module = payload["module"].as_str().unwrap_or("bridge").to_string();
+                        let function = payload["function"].as_str().unwrap_or_default().to_string();
+                        let args = payload["args"].as_array().cloned().unwrap_or_default();
+                        let method = match plan.action {
+                            SettlementActionKind::Challenge => "challengeSettlement",
+                            SettlementActionKind::Finalize => "finalizeSettlement",
+                            SettlementActionKind::Hold => "hold",
+                        };
+                        executable_sui_calls.push(ExecutableSuiCall {
+                            intent_hash: p.intent_hash.clone(),
+                            method: method.to_string(),
+                            package,
+                            module,
+                            function,
+                            args,
+                        });
+                    }
                 }
-                decisions.push(serde_json::json!({
-                    "intent_hash": p.intent_hash,
-                    "validator": p.validator,
-                    "solver": p.solver,
-                    "amount_out": p.amount_out,
-                    "tx_hash": p.tx_hash,
-                    "block_number": p.block_number,
-                    "timestamp": p.timestamp,
-                    "decision": plan.decision,
-                    "action": format!("{:?}", plan.action).to_lowercase(),
-                    "reason": plan.reason,
-                    "recommended_tx": tx_payload
-                }));
             }
+            decisions.push(serde_json::json!({
+                "intent_hash": p.intent_hash,
+                "validator": p.validator,
+                "solver": p.solver,
+                "amount_out": p.amount_out,
+                "tx_hash": p.tx_hash,
+                "block_number": p.block_number,
+                "timestamp": p.timestamp,
+                "decision": plan.decision,
+                "action": format!("{:?}", plan.action).to_lowercase(),
+                "reason": plan.reason,
+                "recommended_tx": tx_payload
+            }));
+        }
 
         let mode = tx_mode();
-        let execution_results = execute_txs(mode, &executable_txs).await?;
+        let execution_results = if src_kind == "sui" {
+            execute_sui_calls(mode, &executable_sui_calls).await?
+        } else {
+            execute_evm_txs(mode, &executable_txs).await?
+        };
         let mode_label = match mode {
             TxMode::Off => "off",
             TxMode::DryRun => "dry-run",
