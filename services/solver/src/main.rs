@@ -6,6 +6,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::{Duration, sleep};
 use types::{IntentSubmissionRef, IntentSubmittedEvent};
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -81,57 +82,24 @@ fn normalize_chain_config(_prefix: &str, idx: usize, input: ChainConfigInput) ->
     }
 }
 
-fn parse_legacy_chain_config(prefix: &str) -> Result<ChainConfig> {
-    let chain_kind = env::var(format!("{prefix}_CHAIN_KIND")).unwrap_or_else(|_| "evm".to_string());
-    let skip_rpc = env::var(format!("{prefix}_SKIP_RPC"))
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let rpc_url = env::var(format!("{prefix}_RPC_URL")).ok();
-
-    if !skip_rpc && rpc_url.is_none() {
-        return Err(anyhow!("missing {prefix}_RPC_URL for selected chain"));
-    }
-
-    let chain_id = env::var(format!("{prefix}_CHAIN_ID"))
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok());
-
-    Ok(ChainConfig {
-        name: format!("{}_default", prefix.to_lowercase()),
-        chain_kind: chain_kind.to_lowercase(),
-        rpc_url,
-        endpoint_address: env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok(),
-        package_id: env::var(format!("{prefix}_PACKAGE_ID"))
-            .ok()
-            .or_else(|| env::var(format!("{prefix}_ENDPOINT_ADDRESS")).ok()),
-        state_object_id: env::var(format!("{prefix}_STATE_OBJECT_ID")).ok(),
-        module: env::var(format!("{prefix}_MODULE")).unwrap_or_else(|_| "bridge".to_string()),
-        skip_rpc,
-        chain_id,
-    })
-}
-
 fn load_chain_configs(prefix: &str) -> Result<Vec<ChainConfig>> {
     let key = format!("{prefix}_CHAINS_JSON");
-    if let Ok(raw) = env::var(&key) {
-        let parsed: Vec<ChainConfigInput> =
-            serde_json::from_str(&raw).with_context(|| format!("invalid {key}"))?;
-        if parsed.is_empty() {
-            return Err(anyhow!("{key} cannot be empty"));
-        }
-
-        let mut out = Vec::with_capacity(parsed.len());
-        for (idx, cfg) in parsed.into_iter().enumerate() {
-            let normalized = normalize_chain_config(prefix, idx, cfg);
-            if !normalized.skip_rpc && normalized.rpc_url.is_none() {
-                return Err(anyhow!("{key}[{idx}] requires rpc_url when skip_rpc=false"));
-            }
-            out.push(normalized);
-        }
-        Ok(out)
-    } else {
-        Ok(vec![parse_legacy_chain_config(prefix)?])
+    let raw = env::var(&key).with_context(|| format!("missing {key}"))?;
+    let parsed: Vec<ChainConfigInput> =
+        serde_json::from_str(&raw).with_context(|| format!("invalid {key}"))?;
+    if parsed.is_empty() {
+        return Err(anyhow!("{key} cannot be empty"));
     }
+
+    let mut out = Vec::with_capacity(parsed.len());
+    for (idx, cfg) in parsed.into_iter().enumerate() {
+        let normalized = normalize_chain_config(prefix, idx, cfg);
+        if !normalized.skip_rpc && normalized.rpc_url.is_none() {
+            return Err(anyhow!("{key}[{idx}] requires rpc_url when skip_rpc=false"));
+        }
+        out.push(normalized);
+    }
+    Ok(out)
 }
 
 fn build_adapter_from_config(cfg: &ChainConfig) -> Result<Box<dyn ChainAdapter>> {
@@ -190,6 +158,13 @@ fn enrich_polled_intents() -> bool {
     env::var("SOLVER_ENRICH_INTENTS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+fn poll_interval_secs() -> u64 {
+    env::var("SOLVER_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(3)
 }
 
 fn now_unix() -> u64 {
@@ -270,6 +245,120 @@ fn select_destination_runtime<'a>(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if use_chain_polling() {
+        loop {
+            let cycle = async {
+                let src_configs = load_chain_configs("SOLVER_SRC")?;
+                let dst_configs = load_chain_configs("SOLVER_DST")?;
+
+                let mut src_runtimes = Vec::with_capacity(src_configs.len());
+                for cfg in src_configs {
+                    src_runtimes.push(build_runtime(cfg).await?);
+                }
+
+                let mut dst_runtimes = Vec::with_capacity(dst_configs.len());
+                for cfg in dst_configs {
+                    dst_runtimes.push(build_runtime(cfg).await?);
+                }
+
+                let from_block: u64 = env::var("SOLVER_FROM_BLOCK")
+                    .unwrap_or_else(|_| "0".to_string())
+                    .parse()
+                    .context("invalid SOLVER_FROM_BLOCK")?;
+                let to_block_override: Option<u64> = env::var("SOLVER_TO_BLOCK")
+                    .ok()
+                    .map(|v| v.parse().context("invalid SOLVER_TO_BLOCK"))
+                    .transpose()?;
+
+                if enrich_polled_intents() {
+                    let mut by_source = Vec::new();
+                    for src in &src_runtimes {
+                        let to_block = to_block_override.unwrap_or(src.block_number);
+                        let events = if let Some(adapter) = src.adapter.as_ref() {
+                            adapter.fetch_intent_events(from_block, to_block).await?
+                        } else {
+                            load_polled_intent_events()?
+                        };
+                        for event in &events {
+                            try_append_flow_event(
+                                "intent_submitted",
+                                &event.intent.intent_hash,
+                                serde_json::to_value(event)
+                                    .unwrap_or_else(|_| serde_json::json!({})),
+                            );
+                        }
+                        by_source.push(serde_json::json!({
+                            "source_chain": chain_meta(src),
+                            "from_block": from_block,
+                            "to_block": to_block,
+                            "intent_submitted_events": events,
+                        }));
+                    }
+
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                            "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                            "polled_intent_events_by_source": by_source,
+                        }))
+                        .context("failed to encode polled intent events")?
+                    );
+                } else {
+                    let mut by_source = Vec::new();
+                    for src in &src_runtimes {
+                        let to_block = to_block_override.unwrap_or(src.block_number);
+                        let refs = if let Some(adapter) = src.adapter.as_ref() {
+                            adapter.fetch_intent_submissions(from_block, to_block).await?
+                        } else {
+                            load_polled_intent_refs()?
+                        };
+                        for r in &refs {
+                            try_append_flow_event(
+                                "intent_submission_ref",
+                                &r.intent_hash,
+                                serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({})),
+                            );
+                        }
+                        by_source.push(serde_json::json!({
+                            "source_chain": chain_meta(src),
+                            "from_block": from_block,
+                            "to_block": to_block,
+                            "intent_submission_refs": refs,
+                        }));
+                    }
+
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                            "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
+                            "polled_intent_refs_by_source": by_source,
+                        }))
+                        .context("failed to encode polled intent submissions")?
+                    );
+                }
+
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+
+            if let Err(err) = cycle {
+                eprintln!("solver polling cycle failed: {err}");
+            }
+
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("solver received Ctrl+C, exiting");
+                    break;
+                }
+                _ = sleep(Duration::from_secs(poll_interval_secs())) => {}
+            }
+        }
+
+        return Ok(());
+    }
+
     let src_configs = load_chain_configs("SOLVER_SRC")?;
     let dst_configs = load_chain_configs("SOLVER_DST")?;
 
@@ -281,89 +370,6 @@ async fn main() -> Result<()> {
     let mut dst_runtimes = Vec::with_capacity(dst_configs.len());
     for cfg in dst_configs {
         dst_runtimes.push(build_runtime(cfg).await?);
-    }
-
-    if use_chain_polling() {
-        let from_block: u64 = env::var("SOLVER_FROM_BLOCK")
-            .unwrap_or_else(|_| "0".to_string())
-            .parse()
-            .context("invalid SOLVER_FROM_BLOCK")?;
-        let to_block_override: Option<u64> = env::var("SOLVER_TO_BLOCK")
-            .ok()
-            .map(|v| v.parse().context("invalid SOLVER_TO_BLOCK"))
-            .transpose()?;
-
-        if enrich_polled_intents() {
-            let mut by_source = Vec::new();
-            for src in &src_runtimes {
-                let to_block = to_block_override.unwrap_or(src.block_number);
-                let events = if let Some(adapter) = src.adapter.as_ref() {
-                    adapter.fetch_intent_events(from_block, to_block).await?
-                } else {
-                    load_polled_intent_events()?
-                };
-                for event in &events {
-                    try_append_flow_event(
-                        "intent_submitted",
-                        &event.intent.intent_hash,
-                        serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
-                    );
-                }
-                by_source.push(serde_json::json!({
-                    "source_chain": chain_meta(src),
-                    "from_block": from_block,
-                    "to_block": to_block,
-                    "intent_submitted_events": events,
-                }));
-            }
-
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
-                    "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
-                    "polled_intent_events_by_source": by_source,
-                }))
-                .context("failed to encode polled intent events")?
-            );
-        } else {
-            let mut by_source = Vec::new();
-            for src in &src_runtimes {
-                let to_block = to_block_override.unwrap_or(src.block_number);
-                let refs = if let Some(adapter) = src.adapter.as_ref() {
-                    adapter
-                        .fetch_intent_submissions(from_block, to_block)
-                        .await?
-                } else {
-                    load_polled_intent_refs()?
-                };
-                for r in &refs {
-                    try_append_flow_event(
-                        "intent_submission_ref",
-                        &r.intent_hash,
-                        serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({})),
-                    );
-                }
-                by_source.push(serde_json::json!({
-                    "source_chain": chain_meta(src),
-                    "from_block": from_block,
-                    "to_block": to_block,
-                    "intent_submission_refs": refs,
-                }));
-            }
-
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "source_chains": src_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
-                    "destination_chains": dst_runtimes.iter().map(chain_meta).collect::<Vec<_>>(),
-                    "polled_intent_refs_by_source": by_source,
-                }))
-                .context("failed to encode polled intent submissions")?
-            );
-        }
-
-        return Ok(());
     }
 
     let event = load_intent_event()?;

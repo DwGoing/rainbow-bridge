@@ -28,7 +28,8 @@ if [ "$LOAD_ENV" = true ] && [ -f ".env" ]; then
 fi
 
 if [ "${SOLVER_USE_CHAIN_POLLING:-false}" = "true" ] || [ "${SOLVER_USE_CHAIN_POLLING:-0}" = "1" ]; then
-  : "${SOLVER_SRC_CHAIN_KIND:?missing SOLVER_SRC_CHAIN_KIND}"
+  : "${SOLVER_SRC_CHAINS_JSON:?missing SOLVER_SRC_CHAINS_JSON}"
+  : "${SOLVER_DST_CHAINS_JSON:?missing SOLVER_DST_CHAINS_JSON}"
 fi
 
 echo "[run] solver"

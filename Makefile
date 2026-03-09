@@ -12,6 +12,7 @@ SUI_MOVE_ENV ?= testnet
 .PHONY: run-solver run-validator
 .PHONY: run-validator-off run-validator-dry run-validator-send
 .PHONY: run-explorer
+.PHONY: send-test-intent
 
 help:
 	@echo "Rainbow Bridge monorepo tasks"
@@ -48,6 +49,7 @@ help:
 	@echo "  make run-validator-off"
 	@echo "  make run-validator-dry"
 	@echo "  make run-validator-send"
+	@echo "  make send-test-intent"
 
 check: check-rust check-evm check-sui
 
@@ -140,3 +142,6 @@ run-validator-send:
 
 run-explorer:
 	cd $(RUST_WORKSPACE) && ./scripts/run_explorer.sh
+
+send-test-intent:
+	cd $(RUST_WORKSPACE) && ./scripts/send_test_intent.sh $(ARGS)

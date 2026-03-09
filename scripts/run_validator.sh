@@ -32,13 +32,16 @@ if [ "$LOAD_ENV" = true ] && [ -f ".env" ]; then
   set +a
 fi
 
+: "${VALIDATOR_SRC_CHAINS_JSON:?missing VALIDATOR_SRC_CHAINS_JSON}"
+: "${VALIDATOR_DST_CHAINS_JSON:?missing VALIDATOR_DST_CHAINS_JSON}"
+
 MODE="${VALIDATOR_TX_MODE:-off}"
 if [ -n "$FORCE_MODE" ]; then
   MODE="$FORCE_MODE"
   export VALIDATOR_TX_MODE="$FORCE_MODE"
 fi
 
-if [ "$MODE" = "send" ] && [ "${VALIDATOR_SRC_CHAIN_KIND:-evm}" = "evm" ]; then
+if [ "$MODE" = "send" ] && printf '%s' "${VALIDATOR_SRC_CHAINS_JSON}" | grep -q '"chain_kind":"evm"'; then
   : "${VALIDATOR_TX_PRIVATE_KEY:?missing VALIDATOR_TX_PRIVATE_KEY for evm send mode}"
 fi
 

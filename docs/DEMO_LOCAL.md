@@ -20,7 +20,7 @@
 
 多链说明：
 1. `solver` 和 `validator` 现已支持同时配置多个 `src` / `dst` 链。
-2. 使用 `*_SRC_CHAINS_JSON` 和 `*_DST_CHAINS_JSON` 时，会覆盖旧的单链 `*_SRC_*` / `*_DST_*` 键。
+2. 运行时仅使用 `*_SRC_CHAINS_JSON` 和 `*_DST_CHAINS_JSON`。
 
 ## 2. 前置依赖
 
@@ -199,9 +199,9 @@ cp .env.example .env
 ### 5.2 必填项
 
 请至少填写：
-1. `SOLVER_SRC_RPC_URL` / `SOLVER_DST_RPC_URL`
-2. `VALIDATOR_SRC_RPC_URL` / `VALIDATOR_DST_RPC_URL`
-3. `*_ENDPOINT_ADDRESS`（EVM）或 `*_PACKAGE_ID` + `*_STATE_OBJECT_ID`（Sui）
+1. `SOLVER_SRC_CHAINS_JSON` / `SOLVER_DST_CHAINS_JSON`
+2. `VALIDATOR_SRC_CHAINS_JSON` / `VALIDATOR_DST_CHAINS_JSON`
+3. JSON 内链配置需包含：EVM 的 `endpoint_address`，或 Sui 的 `package_id` + `state_object_id`
 4. `FLOW_EVENT_LOG_PATH`（建议保留默认）
 5. `EXPLORER_BIND`（默认 `127.0.0.1:8080`）
 

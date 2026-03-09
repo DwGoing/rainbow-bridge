@@ -111,8 +111,8 @@ Important validator runtime knobs:
 - `VALIDATOR_SRC_PACKAGE_ID`
 - `VALIDATOR_SRC_STATE_OBJECT_ID`
 - `VALIDATOR_SUI_CLI_BIN`
-- `SOLVER_SRC_CHAINS_JSON` / `SOLVER_DST_CHAINS_JSON` (multi-chain, overrides legacy single-chain vars)
-- `VALIDATOR_SRC_CHAINS_JSON` / `VALIDATOR_DST_CHAINS_JSON` (multi-chain, overrides legacy single-chain vars)
+- `SOLVER_SRC_CHAINS_JSON` / `SOLVER_DST_CHAINS_JSON` (required)
+- `VALIDATOR_SRC_CHAINS_JSON` / `VALIDATOR_DST_CHAINS_JSON` (required)
 
 Real chain runtime commands:
 - `make run-solver`
