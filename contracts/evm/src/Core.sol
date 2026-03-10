@@ -6,8 +6,8 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 
-import "./Constant.sol";
-import "./Error.sol";
+import {ADMIN_ROLE} from "./Constant.sol";
+import {ErrUnauthorized, ErrInvalidAddress} from "./Error.sol";
 
 abstract contract Core is
     Initializable,
@@ -19,21 +19,31 @@ abstract contract Core is
 
     /// @notice Admin role for managing the contract
     modifier onlyOwner() {
+        _onlyOwner();
+        _;
+    }
+
+    /// @notice Internal function to check if the caller is the owner
+    function _onlyOwner() internal view {
         if (!hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
             revert ErrUnauthorized();
         }
-        _;
     }
 
     /// @notice Modifier to restrict access to either the owner or a specific role
     modifier onlyOwnerOrRole(bytes32 role) {
+        _onlyOwnerOrRole(role);
+        _;
+    }
+
+    /// @notice Internal function to check if the caller is the owner or has a specific role
+    function _onlyOwnerOrRole(bytes32 role) internal view {
         if (
             !hasRole(DEFAULT_ADMIN_ROLE, msg.sender) &&
             !hasRole(role, msg.sender)
         ) {
             revert ErrUnauthorized();
         }
-        _;
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor

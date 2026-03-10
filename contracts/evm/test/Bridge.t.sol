@@ -8,7 +8,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Bridge, IZKVerifier} from "../src/Bridge.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
 import {NATIVE_TOKEN_ADDRESS, CHALLENGE_WINDOW, ADMIN_ROLE} from "../src/Constant.sol";
-import {ErrUnauthorized, ErrInvalidAddress, ErrInvalidAmount, ErrInsufficientBalance, ErrTransferFailed, ErrFeeTooHigh, ErrPenaltyTooHigh, ErrInvalidValidatorCount, ErrInsufficientStake, ErrSlashExceedsStake, ErrAlreadyRegistered, ErrNotValidator, ErrNotSolver, ErrAlreadyInactive, ErrInsufficientETH, ErrUnexpectedETH, ErrInvalidDestinationChain, ErrExpiredDeadline, ErrInvalidDestinationToken, ErrOrderNotFound, ErrInvalidOrderStatus, ErrWrongChain, ErrInsufficientOutput, ErrVerifierNotSet, ErrNullifierUsed, ErrExecutionReplayed, ErrInvalidSolverSignature, ErrInvalidZKProof, ErrSolverInactive, ErrValidatorInactive, ErrAlreadyApproved, ErrCannotSettle, ErrAlreadySettled, ErrChallengeWindowOpen, ErrCannotRefund, ErrCannotRefundYet, ErrNoRejectVotes, ErrValidatorDidNotVote} from "../src/Error.sol";
+import {ErrUnauthorized, ErrInvalidAddress, ErrInvalidAmount, ErrInsufficientBalance, ErrTransferFailed, ErrFeeTooHigh, ErrPenaltyTooHigh, ErrInvalidValidatorCount, ErrInsufficientStake, ErrSlashExceedsStake, ErrAlreadyRegistered, ErrNotValidator, ErrNotSolver, ErrAlreadyInactive, ErrUnexpectedETH, ErrInvalidDestinationChain, ErrExpiredDeadline, ErrInvalidDestinationToken, ErrInvalidRecipientLength, ErrZeroRecipientBytes, ErrOrderNotFound, ErrInvalidOrderStatus, ErrWrongChain, ErrInsufficientOutput, ErrNullifierUsed, ErrExecutionReplayed, ErrInvalidSolverSignature, ErrInvalidZKProof, ErrSolverInactive, ErrValidatorInactive, ErrAlreadyApproved, ErrCannotSettle, ErrAlreadySettled, ErrChallengeWindowOpen, ErrCannotRefund, ErrCannotRefundYet, ErrNoRejectVotes, ErrValidatorDidNotVote} from "../src/Error.sol";
 import {HashLib} from "../src/lib/HashLib.sol";
 import {SignatureLib} from "../src/lib/SignatureLib.sol";
 import {ValidatorLib} from "../src/lib/ValidatorLib.sol";
@@ -178,7 +178,7 @@ contract BridgeTest is Test {
         bridge = BridgeHarness(payable(address(proxy)));
 
         verifier = new MockZKVerifier();
-        bridge.setZKVerifier(address(verifier));
+        bridge.setZkVerifier(address(verifier));
 
         bridge.setMinSolverStake(1 ether);
         bridge.setMinValidatorStake(1 ether);
@@ -230,7 +230,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
 
@@ -319,7 +319,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("ERC20_DST"),
             9e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
         vm.stopPrank();
@@ -343,7 +343,7 @@ contract BridgeTest is Test {
             0,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
 
@@ -357,7 +357,7 @@ contract BridgeTest is Test {
             137,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
     }
@@ -373,7 +373,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
     }
@@ -383,7 +383,7 @@ contract BridgeTest is Test {
 
         vm.prank(user);
         vm.expectRevert(
-            abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
+            abi.encodeWithSelector(ErrInvalidRecipientLength.selector, 0)
         );
         bridge.submitOrder{value: 1 ether}(
             NATIVE_TOKEN_ADDRESS,
@@ -391,7 +391,55 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            address(0),
+            bytes(""),
+            block.timestamp + 1 days
+        );
+    }
+
+    function testSubmitOrderSupports32ByteRecipient() external {
+        vm.deal(user, 10 ether);
+
+        uint256 srcAmount = 1 ether;
+        uint256 fee = (srcAmount * 30) / 10000;
+        uint256 total = srcAmount + fee;
+        bytes
+            memory recipient = hex"1111111111111111111111111111111111111111111111111111111111111111";
+
+        vm.prank(user);
+        bytes32 orderId = bridge.submitOrder{value: total}(
+            NATIVE_TOKEN_ADDRESS,
+            srcAmount,
+            10,
+            abi.encodePacked("SUI"),
+            5e17,
+            recipient,
+            block.timestamp + 1 days
+        );
+
+        bytes memory storedRecipient = bridge.getOrderRecipientBytes(orderId);
+        IBridge.Order memory order = bridge.getOrder(orderId);
+
+        assertEq(storedRecipient, recipient);
+        assertEq(order.recipient, address(0));
+        assertEq(uint256(order.status), uint256(IBridge.OrderStatus.Submitted));
+    }
+
+    function testSubmitOrderRevertsInvalidRecipientLength() external {
+        vm.deal(user, 10 ether);
+
+        bytes memory badRecipient = hex"010203";
+
+        vm.prank(user);
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidRecipientLength.selector, 3)
+        );
+        bridge.submitOrder{value: 1 ether}(
+            NATIVE_TOKEN_ADDRESS,
+            1 ether,
+            10,
+            abi.encodePacked("SOL"),
+            5e17,
+            badRecipient,
             block.timestamp + 1 days
         );
     }
@@ -409,7 +457,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp
         );
     }
@@ -425,7 +473,7 @@ contract BridgeTest is Test {
             10,
             bytes(""),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
     }
@@ -443,7 +491,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("ERC20_DST"),
             9e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
         vm.stopPrank();
@@ -469,7 +517,7 @@ contract BridgeTest is Test {
             _toEthSignedMessageHash(digest)
         );
 
-        IBridge.ZKExecution memory zk = _buildZkExecution(
+        IBridge.ZkExecution memory zk = _buildZkExecution(
             orderId,
             user,
             1 ether,
@@ -483,7 +531,7 @@ contract BridgeTest is Test {
             orderId,
             makeAddr("dstToken"),
             1 ether,
-            user,
+            abi.encodePacked(user),
             zk
         );
     }
@@ -494,11 +542,11 @@ contract BridgeTest is Test {
 
         bytes32[] memory publicInputs = new bytes32[](4);
         publicInputs[0] = orderId;
-        publicInputs[1] = bytes32(uint256(uint160(user)));
+        publicInputs[1] = keccak256(abi.encodePacked(user));
         publicInputs[2] = bytes32(uint256(1 ether));
         publicInputs[3] = keccak256("nullifier-sig-len");
 
-        IBridge.ZKExecution memory zk = IBridge.ZKExecution({
+        IBridge.ZkExecution memory zk = IBridge.ZkExecution({
             nullifier: publicInputs[3],
             zkProof: hex"1234",
             publicInputs: publicInputs,
@@ -511,7 +559,7 @@ contract BridgeTest is Test {
             orderId,
             makeAddr("dstTokenSigLen"),
             1 ether,
-            user,
+            abi.encodePacked(user),
             zk
         );
     }
@@ -523,7 +571,7 @@ contract BridgeTest is Test {
         bytes32 nullifier = keccak256("nullifier-replay");
         _setSubmittedOrder(orderId, 137, dstAmount);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             dstToken,
             dstAmount,
@@ -532,12 +580,18 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
 
         bytes32 otherOrderId = keccak256("order-replay-2");
         _setSubmittedOrder(otherOrderId, 137, dstAmount);
 
-        IBridge.ZKExecution memory replayZk = _signedExecution(
+        IBridge.ZkExecution memory replayZk = _signedExecution(
             otherOrderId,
             dstToken,
             dstAmount,
@@ -556,7 +610,7 @@ contract BridgeTest is Test {
             otherOrderId,
             dstToken,
             dstAmount,
-            user,
+            abi.encodePacked(user),
             replayZk
         );
     }
@@ -565,7 +619,7 @@ contract BridgeTest is Test {
         bytes32 orderId = keccak256("order-not-solver");
         _setSubmittedOrder(orderId, 137, 1 ether);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             makeAddr("dstTokenNotSolver"),
             1 ether,
@@ -579,7 +633,7 @@ contract BridgeTest is Test {
             orderId,
             makeAddr("dstTokenNotSolver"),
             1 ether,
-            user,
+            abi.encodePacked(user),
             zk
         );
     }
@@ -596,7 +650,7 @@ contract BridgeTest is Test {
         });
         bridge.setSolverForTest(solver, info, true);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             makeAddr("dstTokenInactive"),
             1 ether,
@@ -612,7 +666,7 @@ contract BridgeTest is Test {
             orderId,
             makeAddr("dstTokenInactive"),
             1 ether,
-            user,
+            abi.encodePacked(user),
             zk
         );
     }
@@ -621,7 +675,7 @@ contract BridgeTest is Test {
         bytes32 orderId = keccak256("order-invalid-amount");
         _setSubmittedOrder(orderId, 137, 1 ether);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             makeAddr("dstTokenZero"),
             0,
@@ -631,14 +685,20 @@ contract BridgeTest is Test {
 
         vm.prank(solver);
         vm.expectRevert(abi.encodeWithSelector(ErrInvalidAmount.selector, 0));
-        bridge.executeTransfer(orderId, makeAddr("dstTokenZero"), 0, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstTokenZero"),
+            0,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsInvalidRecipient() external {
         bytes32 orderId = keccak256("order-invalid-recipient");
         _setSubmittedOrder(orderId, 137, 1 ether);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             makeAddr("dstTokenRecipient"),
             1 ether,
@@ -647,16 +707,45 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert(
-            abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
-        );
+        vm.expectRevert(ErrZeroRecipientBytes.selector);
         bridge.executeTransfer(
             orderId,
             makeAddr("dstTokenRecipient"),
             1 ether,
-            address(0),
+            hex"0000000000000000000000000000000000000000",
             zk
         );
+    }
+
+    function testExecuteTransferSupports32ByteRecipient() external {
+        bytes32 orderId = keccak256("order-v2-sol");
+        _setSubmittedOrder(orderId, 137, 1 ether);
+
+        bytes
+            memory dstRecipient = hex"2222222222222222222222222222222222222222222222222222222222222222";
+        bytes32 nullifier = keccak256("nullifier-v2-sol");
+
+        IBridge.ZkExecution memory zk = _signedExecutionV2(
+            orderId,
+            makeAddr("dstTokenV2"),
+            1 ether,
+            dstRecipient,
+            nullifier
+        );
+
+        vm.prank(solver);
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstTokenV2"),
+            1 ether,
+            dstRecipient,
+            zk
+        );
+
+        bytes memory storedRecipient = bridge.getOrderRecipientBytes(orderId);
+        IBridge.Order memory order = bridge.getOrder(orderId);
+        assertEq(storedRecipient, dstRecipient);
+        assertEq(uint256(order.status), uint256(IBridge.OrderStatus.Executed));
     }
 
     function testExecuteTransferRevertsExecutionReplayedDigest() external {
@@ -676,7 +765,7 @@ contract BridgeTest is Test {
         );
         bridge.setUsedExecutionDigestForTest(digest, true);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             dstToken,
             dstAmount,
@@ -688,7 +777,13 @@ contract BridgeTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(ErrExecutionReplayed.selector, digest)
         );
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsBadPublicInputLength() external {
@@ -716,7 +811,7 @@ contract BridgeTest is Test {
         publicInputs[1] = bytes32(uint256(uint160(user)));
         publicInputs[2] = bytes32(dstAmount);
 
-        IBridge.ZKExecution memory zk = IBridge.ZKExecution({
+        IBridge.ZkExecution memory zk = IBridge.ZkExecution({
             nullifier: nullifier,
             zkProof: hex"1234",
             publicInputs: publicInputs,
@@ -725,7 +820,13 @@ contract BridgeTest is Test {
 
         vm.prank(solver);
         vm.expectRevert(ErrInvalidZKProof.selector);
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsPublicRecipientMismatch() external {
@@ -754,7 +855,7 @@ contract BridgeTest is Test {
         publicInputs[2] = bytes32(dstAmount);
         publicInputs[3] = nullifier;
 
-        IBridge.ZKExecution memory zk = IBridge.ZKExecution({
+        IBridge.ZkExecution memory zk = IBridge.ZkExecution({
             nullifier: nullifier,
             zkProof: hex"1234",
             publicInputs: publicInputs,
@@ -763,7 +864,13 @@ contract BridgeTest is Test {
 
         vm.prank(solver);
         vm.expectRevert(ErrInvalidZKProof.selector);
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsPublicOrderMismatch() external {
@@ -792,7 +899,7 @@ contract BridgeTest is Test {
         publicInputs[2] = bytes32(dstAmount);
         publicInputs[3] = nullifier;
 
-        IBridge.ZKExecution memory zk = IBridge.ZKExecution({
+        IBridge.ZkExecution memory zk = IBridge.ZkExecution({
             nullifier: nullifier,
             zkProof: hex"1234",
             publicInputs: publicInputs,
@@ -801,7 +908,13 @@ contract BridgeTest is Test {
 
         vm.prank(solver);
         vm.expectRevert(ErrInvalidZKProof.selector);
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsPublicAmountMismatch() external {
@@ -830,7 +943,7 @@ contract BridgeTest is Test {
         publicInputs[2] = bytes32(uint256(2 ether));
         publicInputs[3] = nullifier;
 
-        IBridge.ZKExecution memory zk = IBridge.ZKExecution({
+        IBridge.ZkExecution memory zk = IBridge.ZkExecution({
             nullifier: nullifier,
             zkProof: hex"1234",
             publicInputs: publicInputs,
@@ -839,7 +952,13 @@ contract BridgeTest is Test {
 
         vm.prank(solver);
         vm.expectRevert(ErrInvalidZKProof.selector);
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsPublicNullifierMismatch() external {
@@ -868,7 +987,7 @@ contract BridgeTest is Test {
         publicInputs[2] = bytes32(dstAmount);
         publicInputs[3] = keccak256("different-nullifier");
 
-        IBridge.ZKExecution memory zk = IBridge.ZKExecution({
+        IBridge.ZkExecution memory zk = IBridge.ZkExecution({
             nullifier: nullifier,
             zkProof: hex"1234",
             publicInputs: publicInputs,
@@ -877,7 +996,13 @@ contract BridgeTest is Test {
 
         vm.prank(solver);
         vm.expectRevert(ErrInvalidZKProof.selector);
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsInvalidZkProof() external {
@@ -888,7 +1013,7 @@ contract BridgeTest is Test {
         _setSubmittedOrder(orderId, 137, dstAmount);
 
         verifier.setShouldPass(false);
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             dstToken,
             dstAmount,
@@ -898,7 +1023,13 @@ contract BridgeTest is Test {
 
         vm.prank(solver);
         vm.expectRevert(ErrInvalidZKProof.selector);
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsOrderNotFound() external {
@@ -907,7 +1038,7 @@ contract BridgeTest is Test {
         uint256 dstAmount = 1 ether;
         bytes32 nullifier = keccak256("nullifier-not-found");
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             dstToken,
             dstAmount,
@@ -919,14 +1050,20 @@ contract BridgeTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(ErrOrderNotFound.selector, orderId)
         );
-        bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
+        bridge.executeTransfer(
+            orderId,
+            dstToken,
+            dstAmount,
+            abi.encodePacked(user),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsWrongChain() external {
         bytes32 orderId = keccak256("order-wrong-chain");
         _setSubmittedOrder(orderId, 10, 1 ether);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             makeAddr("dstTokenWrongChain"),
             1 ether,
@@ -942,7 +1079,7 @@ contract BridgeTest is Test {
             orderId,
             makeAddr("dstTokenWrongChain"),
             1 ether,
-            user,
+            abi.encodePacked(user),
             zk
         );
     }
@@ -951,7 +1088,7 @@ contract BridgeTest is Test {
         bytes32 orderId = keccak256("order-insufficient-output");
         _setSubmittedOrder(orderId, 137, 2 ether);
 
-        IBridge.ZKExecution memory zk = _signedExecution(
+        IBridge.ZkExecution memory zk = _signedExecution(
             orderId,
             makeAddr("dstTokenLowOut"),
             1 ether,
@@ -971,7 +1108,7 @@ contract BridgeTest is Test {
             orderId,
             makeAddr("dstTokenLowOut"),
             1 ether,
-            user,
+            abi.encodePacked(user),
             zk
         );
     }
@@ -1122,7 +1259,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("Q"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
 
@@ -1163,7 +1300,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
 
@@ -1190,7 +1327,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
 
@@ -1314,7 +1451,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
 
@@ -1327,7 +1464,7 @@ contract BridgeTest is Test {
             10,
             abi.encodePacked("USDC"),
             5e17,
-            user,
+            abi.encodePacked(user),
             block.timestamp + 1 days
         );
         assertTrue(orderId != bytes32(0));
@@ -1466,7 +1603,7 @@ contract BridgeTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
         );
-        bridge.setZKVerifier(address(0));
+        bridge.setZkVerifier(address(0));
     }
 
     function testRefundOrderRevertsOrderNotFound() external {
@@ -1736,7 +1873,7 @@ contract BridgeTest is Test {
         uint256 dstAmount,
         address dstRecipient,
         bytes32 nullifier
-    ) internal view returns (IBridge.ZKExecution memory zk) {
+    ) internal view returns (IBridge.ZkExecution memory zk) {
         bytes32 digest = _executionDigest(
             orderId,
             dstToken,
@@ -1759,20 +1896,70 @@ contract BridgeTest is Test {
         );
     }
 
+    function _signedExecutionV2(
+        bytes32 orderId,
+        address dstToken,
+        uint256 dstAmount,
+        bytes memory dstRecipient,
+        bytes32 nullifier
+    ) internal view returns (IBridge.ZkExecution memory zk) {
+        bytes32 digest = _executionDigestV2(
+            orderId,
+            dstToken,
+            dstAmount,
+            dstRecipient,
+            solver,
+            nullifier
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(
+            solverPk,
+            _toEthSignedMessageHash(digest)
+        );
+
+        zk = _buildZkExecutionV2(
+            orderId,
+            dstRecipient,
+            dstAmount,
+            nullifier,
+            abi.encodePacked(r, s, v)
+        );
+    }
+
     function _buildZkExecution(
         bytes32 orderId,
         address dstRecipient,
         uint256 dstAmount,
         bytes32 nullifier,
         bytes memory sig
-    ) internal pure returns (IBridge.ZKExecution memory zk) {
+    ) internal pure returns (IBridge.ZkExecution memory zk) {
         bytes32[] memory publicInputs = new bytes32[](4);
         publicInputs[0] = orderId;
-        publicInputs[1] = bytes32(uint256(uint160(dstRecipient)));
+        publicInputs[1] = keccak256(abi.encodePacked(dstRecipient));
         publicInputs[2] = bytes32(dstAmount);
         publicInputs[3] = nullifier;
 
-        zk = IBridge.ZKExecution({
+        zk = IBridge.ZkExecution({
+            nullifier: nullifier,
+            zkProof: hex"1234",
+            publicInputs: publicInputs,
+            solverSignature: sig
+        });
+    }
+
+    function _buildZkExecutionV2(
+        bytes32 orderId,
+        bytes memory dstRecipient,
+        uint256 dstAmount,
+        bytes32 nullifier,
+        bytes memory sig
+    ) internal pure returns (IBridge.ZkExecution memory zk) {
+        bytes32[] memory publicInputs = new bytes32[](4);
+        publicInputs[0] = orderId;
+        publicInputs[1] = keccak256(dstRecipient);
+        publicInputs[2] = bytes32(dstAmount);
+        publicInputs[3] = nullifier;
+
+        zk = IBridge.ZkExecution({
             nullifier: nullifier,
             zkProof: hex"1234",
             publicInputs: publicInputs,
@@ -1785,6 +1972,29 @@ contract BridgeTest is Test {
         address dstToken,
         uint256 dstAmount,
         address dstRecipient,
+        address solverAddr,
+        bytes32 nullifier
+    ) internal view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    address(bridge),
+                    block.chainid,
+                    orderId,
+                    dstToken,
+                    dstAmount,
+                    abi.encodePacked(dstRecipient),
+                    solverAddr,
+                    nullifier
+                )
+            );
+    }
+
+    function _executionDigestV2(
+        bytes32 orderId,
+        address dstToken,
+        uint256 dstAmount,
+        bytes memory dstRecipient,
         address solverAddr,
         bytes32 nullifier
     ) internal view returns (bytes32) {

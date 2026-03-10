@@ -42,10 +42,10 @@ enum OrderStatus {
 
 ### Phase 1: 订单创建与锁仓
 
-函数：`submitOrder(address srcToken, uint256 srcAmount, uint256 dstChainId, bytes dstToken, uint256 minDstAmount, address recipient, uint256 deadline)`
+函数：`submitOrder(address srcToken, uint256 srcAmount, uint256 dstChainId, bytes dstToken, uint256 minDstAmount, bytes recipient, uint256 deadline)`
 
 逻辑：
-- 校验目标链、截止时间、最小金额等参数
+- 校验目标链、截止时间、最小金额、目标链接收地址格式等参数
 - 计算协议费：`srcAmount * protocolFeeBps / 10000`
 - 锁定 `srcAmount + fee`
 - 写入 `orders[orderId]`
@@ -53,7 +53,7 @@ enum OrderStatus {
 
 ### Phase 2: Solver 执行回执
 
-函数：`executeTransfer(bytes32 orderId, address dstToken, uint256 dstAmount, address dstRecipient, ZKExecution zk)`
+函数：`executeTransfer(bytes32 orderId, address dstToken, uint256 dstAmount, bytes dstRecipient, ZKExecution zk)`
 
 其中 `ZKExecution` 包含：
 - `nullifier`：唯一防重放标识
@@ -63,7 +63,7 @@ enum OrderStatus {
 
 逻辑：
 - 校验 `msg.sender` 为活跃 Solver
-- 生成执行摘要 `digest = H(contract, chainId, orderId, token, amount, recipient, solver, nullifier)`
+- 生成执行摘要 `digest = H(contract, chainId, orderId, token, amount, recipientBytes, solver, nullifier)`
 - 对 `solverSignature` 执行 `ecrecover` 验签，确保签名人就是提交者
 - 校验 `usedNullifiers[nullifier] == false` 与 `usedExecutionDigests[digest] == false`
 - 调用 `IZKVerifier.verify(zkProof, publicInputs)`
@@ -113,6 +113,25 @@ enum OrderStatus {
 - 注册：`registerSolver(address rewardRecipient)`，最低质押 `minSolverStake`
 - 注销：`unregisterSolver()`
 - 更新奖励地址：`setSolverRewardRecipient(address)`
+
+## 异构链接收地址规范
+
+目标链接收地址统一使用 `bytes recipient` 表示，不再限制为 EVM `address`。
+
+编码建议：
+- EVM：20 字节原始地址（`abi.encodePacked(address)`）
+- Sui：32 字节地址（去掉 `0x` 后按 hex 解析）
+- Solana：32 字节公钥（base58 解码后的原始字节）
+
+校验规则：
+- `recipient.length > 0`
+- 按 `dstChainId` 匹配允许长度（EVM=20，Sui=32，Solana=32）
+- 不允许全 0 地址（对应链标准下的空地址）
+
+接口策略：
+- 直接将原接口的 `recipient/dstRecipient` 参数改为 `bytes`
+- 对 EVM 地址使用 20 字节编码（`abi.encodePacked(address)`）
+- 对 Sui/Solana 使用 32 字节原始地址字节
 
 ## 管理与应急能力
 

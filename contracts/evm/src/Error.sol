@@ -34,6 +34,8 @@ error ErrUnexpectedETH();
 error ErrInvalidDestinationChain(uint256 chainId);
 error ErrExpiredDeadline(uint256 deadline);
 error ErrInvalidDestinationToken();
+error ErrInvalidRecipientLength(uint256 length);
+error ErrZeroRecipientBytes();
 error ErrOrderNotFound(bytes32 orderId);
 error ErrInvalidOrderStatus(uint8 status);
 error ErrWrongChain(uint256 expectedChain, uint256 actualChain);

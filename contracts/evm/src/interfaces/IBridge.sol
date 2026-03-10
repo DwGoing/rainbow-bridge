@@ -57,7 +57,7 @@ interface IBridge {
         address rewardRecipient;
     }
 
-    struct ZKExecution {
+    struct ZkExecution {
         bytes32 nullifier;
         bytes zkProof;
         bytes32[] publicInputs;
@@ -120,7 +120,7 @@ interface IBridge {
         address indexed validator,
         uint256 penalty
     );
-    event ZKVerifierUpdated(address indexed verifier);
+    event ZkVerifierUpdated(address indexed verifier);
     event Withdrawn(
         address indexed token,
         address indexed recipient,
@@ -135,7 +135,7 @@ interface IBridge {
         uint256 dstChainId,
         bytes calldata dstToken,
         uint256 minDstAmount,
-        address recipient,
+        bytes calldata recipient,
         uint256 deadline
     ) external payable returns (bytes32 orderId);
 
@@ -153,8 +153,8 @@ interface IBridge {
         bytes32 orderId,
         address dstToken,
         uint256 dstAmount,
-        address dstRecipient,
-        ZKExecution calldata zk
+        bytes calldata dstRecipient,
+        ZkExecution calldata zk
     ) external;
 
     /* ==================== Validator Functions ==================== */
@@ -189,7 +189,7 @@ interface IBridge {
 
     function slashValidator(address validator, uint256 amount) external;
 
-    function setZKVerifier(address verifier) external;
+    function setZkVerifier(address verifier) external;
 
     function challengeSettlement(bytes32 orderId, address validator) external;
 
@@ -204,6 +204,10 @@ interface IBridge {
     function getOrderApprovals(
         bytes32 orderId
     ) external view returns (address[] memory);
+
+    function getOrderRecipientBytes(
+        bytes32 orderId
+    ) external view returns (bytes memory);
 
     function getValidatorCount() external view returns (uint256);
 

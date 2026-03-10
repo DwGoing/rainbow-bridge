@@ -9,10 +9,16 @@ library SignatureLib {
     /**
      * @notice Convert digest to EIP-191 signed message hash
      * @param digest The original digest
-     * @return The message hash
+    * @return messageHash The message hash
      */
-    function toEthSignedMessageHash(bytes32 digest) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
+    function toEthSignedMessageHash(
+        bytes32 digest
+    ) internal pure returns (bytes32 messageHash) {
+        assembly ("memory-safe") {
+            mstore(0x00, "\x19Ethereum Signed Message:\n32")
+            mstore(0x1c, digest)
+            messageHash := keccak256(0x00, 0x3c)
+        }
     }
 
     /**

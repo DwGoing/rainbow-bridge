@@ -11,8 +11,8 @@ import {SignatureLib} from "./lib/SignatureLib.sol";
 import {DigestLib} from "./lib/DigestLib.sol";
 import {ValidatorLib} from "./lib/ValidatorLib.sol";
 import {IZKVerifier} from "./interfaces/IZKVerifier.sol";
-import "./Constant.sol";
-import "./Error.sol";
+import {NATIVE_TOKEN_ADDRESS, CHALLENGE_WINDOW} from "./Constant.sol";
+import {ErrInvalidAddress, ErrVerifierNotSet, ErrInvalidAmount, ErrTransferFailed, ErrFeeTooHigh, ErrPenaltyTooHigh, ErrInvalidValidatorCount, ErrInsufficientStake, ErrSlashExceedsStake, ErrAlreadyRegistered, ErrNotValidator, ErrNotSolver, ErrAlreadyInactive, ErrInsufficientETH, ErrUnexpectedETH, ErrInvalidDestinationChain, ErrExpiredDeadline, ErrInvalidDestinationToken, ErrInvalidRecipientLength, ErrZeroRecipientBytes, ErrOrderNotFound, ErrInvalidOrderStatus, ErrWrongChain, ErrInsufficientOutput, ErrNullifierUsed, ErrExecutionReplayed, ErrInvalidSolverSignature, ErrInvalidZKProof, ErrSolverInactive, ErrValidatorInactive, ErrAlreadyApproved, ErrCannotSettle, ErrAlreadySettled, ErrChallengeWindowOpen, ErrCannotRefund, ErrCannotRefundYet, ErrNoRejectVotes, ErrValidatorDidNotVote} from "../src/Error.sol";
 
 contract Bridge is IBridge, Withdrawable {
     using SafeERC20 for IERC20;
@@ -32,6 +32,7 @@ contract Bridge is IBridge, Withdrawable {
 
     // Order management
     mapping(bytes32 => Order) internal orders;
+    mapping(bytes32 => bytes) internal orderRecipientBytes;
     mapping(address => uint256) public userOrderCount;
     mapping(address => bytes32[]) public userOrders;
     mapping(uint256 => uint256) public dstChainExecutedCount; // Track execution count per chain
@@ -61,7 +62,7 @@ contract Bridge is IBridge, Withdrawable {
         bytes32 orderId;
         address dstToken;
         uint256 dstAmount;
-        address dstRecipient;
+        bytes dstRecipient;
         address solver;
     }
 
@@ -72,7 +73,7 @@ contract Bridge is IBridge, Withdrawable {
         uint256 dstChainId;
         bytes dstToken;
         uint256 minDstAmount;
-        address recipient;
+        bytes recipient;
         uint256 deadline;
     }
 
@@ -130,12 +131,11 @@ contract Bridge is IBridge, Withdrawable {
         validatorPenaltyBps = penaltyBps;
     }
 
-    /// @notice Set the zero-knowledge verifier contract address
-    /// @param verifier The new verifier contract address
-    function setZKVerifier(address verifier) external onlyOwner {
+    /// @notice Backward-compatible alias to satisfy interface naming.
+    function setZkVerifier(address verifier) external onlyOwner {
         if (verifier == address(0)) revert ErrInvalidAddress(verifier);
         zkVerifier = verifier;
-        emit ZKVerifierUpdated(verifier);
+        emit ZkVerifierUpdated(verifier);
     }
 
     function emergencyWithdraw(
@@ -160,8 +160,7 @@ contract Bridge is IBridge, Withdrawable {
     function registerValidator() external payable nonReentrant {
         if (msg.value < minValidatorStake)
             revert ErrInsufficientStake(msg.value, minValidatorStake);
-        if (isValidator[msg.sender])
-            revert ErrAlreadyRegistered(msg.sender);
+        if (isValidator[msg.sender]) revert ErrAlreadyRegistered(msg.sender);
 
         isValidator[msg.sender] = true;
         validatorList.push(msg.sender);
@@ -201,7 +200,8 @@ contract Bridge is IBridge, Withdrawable {
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (!isValidator[validator]) revert ErrNotValidator(validator);
         ValidatorInfo storage info = validators[validator];
-        if (amount > info.stake) revert ErrSlashExceedsStake(amount, info.stake);
+        if (amount > info.stake)
+            revert ErrSlashExceedsStake(amount, info.stake);
 
         info.stake -= amount;
         info.slashCount++;
@@ -258,8 +258,7 @@ contract Bridge is IBridge, Withdrawable {
     /// @notice Update solver reward recipient
     function setSolverRewardRecipient(address newRecipient) external {
         if (!isSolver[msg.sender]) revert ErrNotSolver(msg.sender);
-        if (newRecipient == address(0))
-            revert ErrInvalidAddress(newRecipient);
+        if (newRecipient == address(0)) revert ErrInvalidAddress(newRecipient);
         solvers[msg.sender].rewardRecipient = newRecipient;
     }
 
@@ -297,11 +296,36 @@ contract Bridge is IBridge, Withdrawable {
         if (ctx.srcAmount == 0) revert ErrInvalidAmount(ctx.srcAmount);
         if (ctx.dstChainId == 0 || ctx.dstChainId == chainId)
             revert ErrInvalidDestinationChain(ctx.dstChainId);
-        if (ctx.recipient == address(0))
-            revert ErrInvalidAddress(ctx.recipient);
+        if (!_isRecipientLengthSupported(ctx.recipient.length))
+            revert ErrInvalidRecipientLength(ctx.recipient.length);
+        if (_isZeroBytes(ctx.recipient)) revert ErrZeroRecipientBytes();
         if (ctx.deadline <= block.timestamp)
             revert ErrExpiredDeadline(ctx.deadline);
         if (ctx.dstToken.length == 0) revert ErrInvalidDestinationToken();
+    }
+
+    function _isRecipientLengthSupported(
+        uint256 length
+    ) internal pure returns (bool) {
+        return length == 20 || length == 32;
+    }
+
+    function _isZeroBytes(bytes memory data) internal pure returns (bool) {
+        for (uint256 i = 0; i < data.length; ++i) {
+            if (data[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function _bytesToAddress(
+        bytes memory recipient
+    ) internal pure returns (address addr) {
+        if (recipient.length != 20) return address(0);
+        assembly {
+            addr := shr(96, mload(add(recipient, 32)))
+        }
     }
 
     function _createSubmittedOrder(
@@ -322,10 +346,12 @@ contract Bridge is IBridge, Withdrawable {
         order.dstChainId = ctx.dstChainId;
         order.dstToken = ctx.dstToken;
         order.minDstAmount = ctx.minDstAmount;
-        order.recipient = ctx.recipient;
+        order.recipient = _bytesToAddress(ctx.recipient);
         order.deadline = ctx.deadline;
         order.nonce = nonce;
         order.status = OrderStatus.Submitted;
+
+        orderRecipientBytes[orderId] = ctx.recipient;
 
         userOrders[ctx.user].push(orderId);
 
@@ -338,7 +364,7 @@ contract Bridge is IBridge, Withdrawable {
             ctx.dstChainId,
             ctx.dstToken,
             ctx.minDstAmount,
-            ctx.recipient,
+            order.recipient,
             ctx.deadline
         );
     }
@@ -357,7 +383,7 @@ contract Bridge is IBridge, Withdrawable {
         uint256 dstChainId,
         bytes calldata dstToken,
         uint256 minDstAmount,
-        address recipient,
+        bytes calldata recipient,
         uint256 deadline
     ) external payable nonReentrant whenNotPaused returns (bytes32 orderId) {
         SubmitContext memory ctx = SubmitContext({
@@ -448,25 +474,22 @@ contract Bridge is IBridge, Withdrawable {
 
     function _validatePublicInputs(
         bytes32 orderId,
-        address dstRecipient,
+        bytes memory dstRecipient,
         uint256 dstAmount,
-        ZKExecution calldata zk
+        ZkExecution calldata zk
     ) internal pure {
-        if (zk.publicInputs.length < 4)
-            revert ErrInvalidZKProof();
-        if (zk.publicInputs[0] != orderId)
-            revert ErrInvalidZKProof();
-        if (zk.publicInputs[1] != bytes32(uint256(uint160(dstRecipient))))
+        if (zk.publicInputs.length < 4) revert ErrInvalidZKProof();
+        if (zk.publicInputs[0] != orderId) revert ErrInvalidZKProof();
+        if (zk.publicInputs[1] != keccak256(dstRecipient))
             revert ErrInvalidZKProof();
         if (zk.publicInputs[2] != bytes32(dstAmount))
             revert ErrInvalidZKProof();
-        if (zk.publicInputs[3] != zk.nullifier)
-            revert ErrInvalidZKProof();
+        if (zk.publicInputs[3] != zk.nullifier) revert ErrInvalidZKProof();
     }
 
     function _validateExecutionProof(
         ExecutionContext memory ctx,
-        ZKExecution calldata zk
+        ZkExecution calldata zk
     ) internal view returns (bytes32 digest) {
         if (zkVerifier == address(0)) revert ErrVerifierNotSet();
         if (usedNullifiers[zk.nullifier]) revert ErrNullifierUsed(zk.nullifier);
@@ -483,8 +506,7 @@ contract Bridge is IBridge, Withdrawable {
 
         if (usedExecutionDigests[digest]) revert ErrExecutionReplayed(digest);
         if (
-            SignatureLib.recoverSigner(digest, zk.solverSignature) !=
-                ctx.solver
+            SignatureLib.recoverSigner(digest, zk.solverSignature) != ctx.solver
         ) revert ErrInvalidSolverSignature();
 
         // Bind proof public inputs to order core fields.
@@ -525,15 +547,16 @@ contract Bridge is IBridge, Withdrawable {
         bytes32 orderId,
         address dstToken,
         uint256 dstAmount,
-        address dstRecipient,
-        ZKExecution calldata zk
+        bytes calldata dstRecipient,
+        ZkExecution calldata zk
     ) external nonReentrant whenNotPaused {
         address solver = msg.sender;
         if (!isSolver[solver]) revert ErrNotSolver(solver);
         if (!solvers[solver].active) revert ErrSolverInactive(solver);
         if (dstAmount == 0) revert ErrInvalidAmount(dstAmount);
-        if (dstRecipient == address(0))
-            revert ErrInvalidAddress(dstRecipient);
+        if (!_isRecipientLengthSupported(dstRecipient.length))
+            revert ErrInvalidRecipientLength(dstRecipient.length);
+        if (_isZeroBytes(dstRecipient)) revert ErrZeroRecipientBytes();
 
         ExecutionContext memory ctx = ExecutionContext({
             orderId: orderId,
@@ -556,6 +579,7 @@ contract Bridge is IBridge, Withdrawable {
 
         _validateAndUpdateExecutionOrder(ctx);
         orders[orderId].executionProof = digest;
+        orderRecipientBytes[orderId] = dstRecipient;
 
         emit SolverExecutionVerified(orderId, solver, zk.nullifier, digest);
         emit OrderExecuted(
@@ -564,7 +588,7 @@ contract Bridge is IBridge, Withdrawable {
             chainId,
             dstToken,
             dstAmount,
-            dstRecipient,
+            _bytesToAddress(dstRecipient),
             digest
         );
     }
@@ -638,7 +662,7 @@ contract Bridge is IBridge, Withdrawable {
         if (order.user == address(0)) revert ErrOrderNotFound(orderId);
         if (
             order.status != OrderStatus.Submitted &&
-                order.status != OrderStatus.Executed
+            order.status != OrderStatus.Executed
         ) revert ErrCannotRefund();
         if (block.timestamp <= order.deadline && msg.sender != order.user)
             revert ErrCannotRefundYet(order.deadline);
@@ -665,8 +689,7 @@ contract Bridge is IBridge, Withdrawable {
         bytes32 orderId,
         address validator
     ) external nonReentrant {
-        if (orderRejectCount[orderId] == 0)
-            revert ErrNoRejectVotes(orderId);
+        if (orderRejectCount[orderId] == 0) revert ErrNoRejectVotes(orderId);
         if (!isValidator[validator]) revert ErrNotValidator(validator);
         if (!hasApproved[orderId][validator])
             revert ErrValidatorDidNotVote(validator, orderId);
@@ -708,6 +731,12 @@ contract Bridge is IBridge, Withdrawable {
         bytes32 orderId
     ) external view returns (address[] memory) {
         return orderApprovals[orderId];
+    }
+
+    function getOrderRecipientBytes(
+        bytes32 orderId
+    ) external view returns (bytes memory) {
+        return orderRecipientBytes[orderId];
     }
 
     function getValidatorCount() external view returns (uint256) {
