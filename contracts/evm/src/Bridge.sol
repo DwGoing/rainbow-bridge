@@ -138,6 +138,10 @@ contract Bridge is IBridge, Withdrawable {
         emit ZkVerifierUpdated(verifier);
     }
 
+    /// @notice Emergency withdraw tokens from the contract
+    /// @param token The token address
+    /// @param amount The amount to withdraw
+    /// @param recipient The recipient address
     function emergencyWithdraw(
         address token,
         uint256 amount,
@@ -146,10 +150,12 @@ contract Bridge is IBridge, Withdrawable {
         super.emergencyWithdraw(token, amount, recipient);
     }
 
+    /// @notice Pause the contract (disables critical functions)
     function pause() public override(IBridge, Core) {
         super.pause();
     }
 
+    /// @notice Unpause the contract (enables critical functions)
     function unpause() public override(IBridge, Core) {
         super.unpause();
     }
@@ -290,6 +296,8 @@ contract Bridge is IBridge, Withdrawable {
         }
     }
 
+    /// @notice Internal function to validate submitOrder inputs
+    /// @param ctx The submit context containing order parameters
     function _validateSubmitOrderInputs(
         SubmitContext memory ctx
     ) internal view {
@@ -304,12 +312,18 @@ contract Bridge is IBridge, Withdrawable {
         if (ctx.dstToken.length == 0) revert ErrInvalidDestinationToken();
     }
 
+    /// @notice Internal function to check if recipient length is supported (20 or 32 bytes)
+    /// @param length The length of the recipient bytes
+    /// @return True if the length is supported, false otherwise
     function _isRecipientLengthSupported(
         uint256 length
     ) internal pure returns (bool) {
         return length == 20 || length == 32;
     }
 
+    /// @notice Internal function to check if bytes array is all zeros
+    /// @param data The bytes array to check
+    /// @return True if all bytes are zero, false otherwise
     function _isZeroBytes(bytes memory data) internal pure returns (bool) {
         for (uint256 i = 0; i < data.length; ++i) {
             if (data[i] != 0) {
@@ -319,6 +333,9 @@ contract Bridge is IBridge, Withdrawable {
         return true;
     }
 
+    /// @notice Internal function to convert bytes to address
+    /// @param recipient The bytes representation of the recipient
+    /// @return addr The address extracted from bytes
     function _bytesToAddress(
         bytes memory recipient
     ) internal pure returns (address addr) {
@@ -328,6 +345,10 @@ contract Bridge is IBridge, Withdrawable {
         }
     }
 
+    /// @notice Internal function to create a new order and emit event
+    /// @param ctx The submit context containing order parameters
+    /// @param srcAmountWithFee The total amount including protocol fee
+    /// @return orderId The ID of the created order
     function _createSubmittedOrder(
         SubmitContext memory ctx,
         uint256 srcAmountWithFee
@@ -408,6 +429,9 @@ contract Bridge is IBridge, Withdrawable {
         return orderId;
     }
 
+    /// @notice Internal function to handle rejected settlement votes and apply penalties
+    /// @param orderId The ID of the order being voted on
+    /// @param validator The address of the validator who rejected the settlement
     function _handleRejectedSettlement(
         bytes32 orderId,
         address validator
@@ -436,6 +460,9 @@ contract Bridge is IBridge, Withdrawable {
         emit SettlementChallenged(orderId, validator, validator, penalty);
     }
 
+    /// @notice Internal function to check if settlement can be finalized and update order status
+    /// @param orderId The ID of the order being finalized
+    /// @param order The order struct to update
     function _finalizeIfReady(bytes32 orderId, Order storage order) internal {
         if (
             orderApproveCount[orderId] >= requiredValidators &&
@@ -448,6 +475,10 @@ contract Bridge is IBridge, Withdrawable {
         }
     }
 
+    /// @notice Internal function to release settled funds to user and solver
+    /// @param order The order struct containing settlement details
+    /// @param userRefund The amount to refund to the user
+    /// @param solverReward The amount to reward the solver
     function _releaseSettledFunds(
         Order storage order,
         uint256 userRefund,
@@ -472,6 +503,11 @@ contract Bridge is IBridge, Withdrawable {
         );
     }
 
+    /// @notice Internal function to validate public inputs of a zk proof
+    /// @param orderId The ID of the order being validated
+    /// @param dstRecipient The recipient address on the destination chain
+    /// @param dstAmount The amount being transferred
+    /// @param zk The zk execution proof
     function _validatePublicInputs(
         bytes32 orderId,
         bytes memory dstRecipient,
@@ -487,6 +523,10 @@ contract Bridge is IBridge, Withdrawable {
         if (zk.publicInputs[3] != zk.nullifier) revert ErrInvalidZKProof();
     }
 
+    /// @notice Internal function to validate execution proof and prevent replay attacks
+    /// @param ctx Execution context for this transfer
+    /// @param zk The zk execution proof and solver signature
+    /// @return digest The digest of the execution proof for replay protection
     function _validateExecutionProof(
         ExecutionContext memory ctx,
         ZkExecution calldata zk
@@ -717,36 +757,55 @@ contract Bridge is IBridge, Withdrawable {
 
     /* =================== Query Functions ==================== */
 
+    /// @notice Get order details by ID
+    /// @param orderId The order ID
+    /// @return The Order struct associated with the given ID
     function getOrder(bytes32 orderId) external view returns (Order memory) {
         return orders[orderId];
     }
 
+    /// @notice Get list of order IDs for a user
+    /// @param user The user address
+    /// @return An array of order IDs associated with the user
     function getUserOrders(
         address user
     ) external view returns (bytes32[] memory) {
         return userOrders[user];
     }
 
+    /// @notice Get list of validator approvals for an order
+    /// @param orderId The order ID
+    /// @return An array of validator addresses who approved the order
     function getOrderApprovals(
         bytes32 orderId
     ) external view returns (address[] memory) {
         return orderApprovals[orderId];
     }
 
+    /// @notice Get the original recipient bytes for an order
+    /// @param orderId The order ID
+    /// @return The original recipient bytes provided in the order
     function getOrderRecipientBytes(
         bytes32 orderId
     ) external view returns (bytes memory) {
         return orderRecipientBytes[orderId];
     }
 
+    /// @notice Get total number of registered validators
+    /// @return The count of registered validators
     function getValidatorCount() external view returns (uint256) {
         return validatorList.length;
     }
 
+    /// @notice Get total number of registered solvers
+    /// @return The count of registered solvers
     function getSolverCount() external view returns (uint256) {
         return solverList.length;
     }
 
+    /// @notice Check if an order is completed
+    /// @param orderId The order ID
+    /// @return True if the order is completed, false otherwise
     function isOrderCompleted(bytes32 orderId) external view returns (bool) {
         return orders[orderId].status == OrderStatus.Completed;
     }
