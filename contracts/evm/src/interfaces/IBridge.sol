@@ -57,6 +57,13 @@ interface IBridge {
         address rewardRecipient;
     }
 
+    struct ZKExecution {
+        bytes32 nullifier;
+        bytes zkProof;
+        bytes32[] publicInputs;
+        bytes solverSignature;
+    }
+
     /* ==================== Events ==================== */
 
     event OrderCreated(
@@ -101,6 +108,19 @@ interface IBridge {
     event ValidatorRegistered(address indexed validator, uint256 stake);
     event ValidatorUnregistered(address indexed validator, uint256 stake);
     event ValidatorSlashed(address indexed validator, uint256 amount);
+    event SolverExecutionVerified(
+        bytes32 indexed orderId,
+        address indexed solver,
+        bytes32 indexed nullifier,
+        bytes32 executionDigest
+    );
+    event SettlementChallenged(
+        bytes32 indexed orderId,
+        address indexed challenger,
+        address indexed validator,
+        uint256 penalty
+    );
+    event ZKVerifierUpdated(address indexed verifier);
     event Withdrawn(
         address indexed token,
         address indexed recipient,
@@ -134,7 +154,7 @@ interface IBridge {
         address dstToken,
         uint256 dstAmount,
         address dstRecipient,
-        bytes32 proof
+        ZKExecution calldata zk
     ) external;
 
     /* ==================== Validator Functions ==================== */
@@ -168,6 +188,10 @@ interface IBridge {
     function setRequiredValidators(uint256 count) external;
 
     function slashValidator(address validator, uint256 amount) external;
+
+    function setZKVerifier(address verifier) external;
+
+    function challengeSettlement(bytes32 orderId, address validator) external;
 
     /* ==================== Query Functions ==================== */
 

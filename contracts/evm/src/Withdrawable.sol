@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {Core} from "./Core.sol";
-import "./Constant.sol";
-import "./Error.sol";
+import {NATIVE_TOKEN_ADDRESS} from "./Constant.sol";
+import {
+    ErrInsufficientBalance,
+    ErrInvalidAddress,
+    ErrInvalidAmount,
+    ErrTransferFailed
+} from "./Error.sol";
 
 /* =================== Events ==================== */
 

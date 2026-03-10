@@ -53,29 +53,41 @@ enum OrderStatus {
 
 ### Phase 2: Solver 执行回执
 
-函数：`executeTransfer(bytes32 orderId, address dstToken, uint256 dstAmount, address dstRecipient, bytes32 proof)`
+函数：`executeTransfer(bytes32 orderId, address dstToken, uint256 dstAmount, address dstRecipient, ZKExecution zk)`
+
+其中 `ZKExecution` 包含：
+- `nullifier`：唯一防重放标识
+- `zkProof`：零知识证明本体
+- `publicInputs`：公开输入（至少绑定 `orderId/recipient/amount/nullifier`）
+- `solverSignature`：Solver 对执行摘要的签名
 
 逻辑：
-- 校验 `msg.sender` 为已注册 Solver
-- 校验订单状态为 `Submitted`
-- 校验 `dstAmount >= minDstAmount`
-- 记录执行信息：`solver/dstAmount/proof/executionTime`
+- 校验 `msg.sender` 为活跃 Solver
+- 生成执行摘要 `digest = H(contract, chainId, orderId, token, amount, recipient, solver, nullifier)`
+- 对 `solverSignature` 执行 `ecrecover` 验签，确保签名人就是提交者
+- 校验 `usedNullifiers[nullifier] == false` 与 `usedExecutionDigests[digest] == false`
+- 调用 `IZKVerifier.verify(zkProof, publicInputs)`
+- 验证成功后写入执行状态并标记 nullifier/digest 已使用
 - 状态置为 `Executed`
-- 事件：`OrderExecuted`
+- 事件：`SolverExecutionVerified` / `OrderExecuted`
 
 ### Phase 3: 多签验证与结算
 
 函数：
 - `approveOrderSettlement(bytes32 orderId, bool approved)`
+- `challengeSettlement(bytes32 orderId, address validator)`
 - `settleOrder(bytes32 orderId)`
 
 逻辑：
 - Validator 对 `Executed` 订单投票
-- 当签名数达到 `requiredValidators` 时置为 `Completed`
+- `approved = true` 计入通过票
+- `approved = false` 视为恶意拒绝（针对已 zk 验证通过的执行），立即按 `validatorPenaltyBps` 扣罚质押
+- 当 `approveCount >= requiredValidators` 且 `rejectCount == 0` 时，订单进入 `Completed`
+- 进入 `Completed` 后需等待 `CHALLENGE_WINDOW` 才可结算
 - 执行结算：
   - 用户返还：`srcAmount - solverReward`
   - Solver 奖励：`srcAmount * 5%`
-- 事件：`OrderSettlement` / `OrderSettled`
+- 事件：`OrderSettlement` / `SettlementChallenged` / `OrderSettled`
 
 ## 退款路径
 
@@ -139,6 +151,11 @@ enum OrderStatus {
 - `nonReentrant`：关键资产路径防重入
 - `whenNotPaused`：可在异常情况下快速停机
 - RBAC：通过 `DEFAULT_ADMIN_ROLE` 和 `ADMIN_ROLE` 分层控制
+- Solver 验签：执行摘要必须由 Solver 私钥签名
+- 防重放：`nullifier` 与 `executionDigest` 双重去重
+- ZK 验证：链上 `IZKVerifier` 强制校验证明与公开输入绑定
+- Validator 反作恶：恶意拒绝触发质押扣罚，可通过 `challengeSettlement` 追加惩罚
+- 挑战窗口：`Completed` 后必须等待 `CHALLENGE_WINDOW` 才能 `settle`
 - 最小质押约束：增加作恶成本
 - 多签阈值：降低单点验证风险
 
