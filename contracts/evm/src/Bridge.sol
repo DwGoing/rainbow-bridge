@@ -10,9 +10,9 @@ import {Withdrawable} from "./Withdrawable.sol";
 import {SignatureLib} from "./lib/SignatureLib.sol";
 import {DigestLib} from "./lib/DigestLib.sol";
 import {ValidatorLib} from "./lib/ValidatorLib.sol";
+import {IZKVerifier} from "./interfaces/IZKVerifier.sol";
 import "./Constant.sol";
 import "./Error.sol";
-import "./interfaces/IZKVerifier.sol";
 
 contract Bridge is IBridge, Withdrawable {
     using SafeERC20 for IERC20;
@@ -99,7 +99,7 @@ contract Bridge is IBridge, Withdrawable {
     /// @notice Set protocol fee in basis points (bps)
     /// @param feeBps The new protocol fee in bps (max 10000)
     function setProtocolFee(uint256 feeBps) external onlyOwner {
-        require(feeBps <= 10000, "Fee too high");
+        if (feeBps > 10000) revert ErrFeeTooHigh(feeBps);
         protocolFeeBps = feeBps;
     }
 
@@ -118,17 +118,15 @@ contract Bridge is IBridge, Withdrawable {
     /// @notice Set the number of required validator approvals for settlement
     /// @param count The new required validator count
     function setRequiredValidators(uint256 count) external onlyOwner {
-        require(
-            count > 0 && count <= totalValidators,
-            "Invalid validator count"
-        );
+        if (count == 0 || count > totalValidators)
+            revert ErrInvalidValidatorCount(count);
         requiredValidators = count;
     }
 
     /// @notice Set the validator penalty in basis points (bps)
     /// @param penaltyBps The new validator penalty in bps (max 5000)
     function setValidatorPenaltyBps(uint256 penaltyBps) external onlyOwner {
-        require(penaltyBps <= 5000, "Penalty too high");
+        if (penaltyBps > 5000) revert ErrPenaltyTooHigh(penaltyBps);
         validatorPenaltyBps = penaltyBps;
     }
 
@@ -160,8 +158,10 @@ contract Bridge is IBridge, Withdrawable {
 
     /// @notice Register as a validator with ETH stake
     function registerValidator() external payable nonReentrant {
-        require(msg.value >= minValidatorStake, "Insufficient stake");
-        require(!isValidator[msg.sender], "Already registered");
+        if (msg.value < minValidatorStake)
+            revert ErrInsufficientStake(msg.value, minValidatorStake);
+        if (isValidator[msg.sender])
+            revert ErrAlreadyRegistered(msg.sender);
 
         isValidator[msg.sender] = true;
         validatorList.push(msg.sender);
@@ -179,9 +179,9 @@ contract Bridge is IBridge, Withdrawable {
 
     /// @notice Unregister as validator and withdraw stake
     function unregisterValidator() external nonReentrant {
-        require(isValidator[msg.sender], "Not a validator");
+        if (!isValidator[msg.sender]) revert ErrNotValidator(msg.sender);
         ValidatorInfo storage info = validators[msg.sender];
-        require(info.active, "Already inactive");
+        if (!info.active) revert ErrAlreadyInactive(msg.sender);
 
         uint256 stakeAmount = info.stake;
         info.active = false;
@@ -189,7 +189,7 @@ contract Bridge is IBridge, Withdrawable {
         totalValidators--;
 
         (bool success, ) = payable(msg.sender).call{value: stakeAmount}("");
-        require(success, "Transfer failed");
+        if (!success) revert ErrTransferFailed();
 
         emit ValidatorUnregistered(msg.sender, stakeAmount);
     }
@@ -199,9 +199,9 @@ contract Bridge is IBridge, Withdrawable {
         address validator,
         uint256 amount
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(isValidator[validator], "Not a validator");
+        if (!isValidator[validator]) revert ErrNotValidator(validator);
         ValidatorInfo storage info = validators[validator];
-        require(amount <= info.stake, "Slash exceeds stake");
+        if (amount > info.stake) revert ErrSlashExceedsStake(amount, info.stake);
 
         info.stake -= amount;
         info.slashCount++;
@@ -220,9 +220,11 @@ contract Bridge is IBridge, Withdrawable {
     function registerSolver(
         address rewardRecipient
     ) external payable nonReentrant {
-        require(msg.value >= minSolverStake, "Insufficient stake");
-        require(!isSolver[msg.sender], "Already registered");
-        require(rewardRecipient != address(0), "Invalid recipient");
+        if (msg.value < minSolverStake)
+            revert ErrInsufficientStake(msg.value, minSolverStake);
+        if (isSolver[msg.sender]) revert ErrAlreadyRegistered(msg.sender);
+        if (rewardRecipient == address(0))
+            revert ErrInvalidAddress(rewardRecipient);
 
         isSolver[msg.sender] = true;
         solverList.push(msg.sender);
@@ -239,24 +241,25 @@ contract Bridge is IBridge, Withdrawable {
 
     /// @notice Unregister as solver and withdraw stake
     function unregisterSolver() external nonReentrant {
-        require(isSolver[msg.sender], "Not a solver");
+        if (!isSolver[msg.sender]) revert ErrNotSolver(msg.sender);
         SolverInfo storage info = solvers[msg.sender];
-        require(info.active, "Already inactive");
+        if (!info.active) revert ErrAlreadyInactive(msg.sender);
 
         uint256 stakeAmount = info.stake;
         info.active = false;
         isSolver[msg.sender] = false;
 
         (bool success, ) = payable(msg.sender).call{value: stakeAmount}("");
-        require(success, "Transfer failed");
+        if (!success) revert ErrTransferFailed();
 
         emit SolverUnstaked(msg.sender, stakeAmount);
     }
 
     /// @notice Update solver reward recipient
     function setSolverRewardRecipient(address newRecipient) external {
-        require(isSolver[msg.sender], "Not a solver");
-        require(newRecipient != address(0), "Invalid recipient");
+        if (!isSolver[msg.sender]) revert ErrNotSolver(msg.sender);
+        if (newRecipient == address(0))
+            revert ErrInvalidAddress(newRecipient);
         solvers[msg.sender].rewardRecipient = newRecipient;
     }
 
@@ -276,9 +279,10 @@ contract Bridge is IBridge, Withdrawable {
 
         // Lock assets
         if (srcToken == NATIVE_TOKEN_ADDRESS) {
-            require(msg.value == srcAmountWithFee, "Insufficient ETH");
+            if (msg.value != srcAmountWithFee)
+                revert ErrInsufficientETH(msg.value, srcAmountWithFee);
         } else {
-            require(msg.value == 0, "ETH not needed");
+            if (msg.value != 0) revert ErrUnexpectedETH();
             IERC20(srcToken).safeTransferFrom(
                 msg.sender,
                 address(this),
@@ -290,14 +294,14 @@ contract Bridge is IBridge, Withdrawable {
     function _validateSubmitOrderInputs(
         SubmitContext memory ctx
     ) internal view {
-        require(ctx.srcAmount > 0, "Invalid amount");
-        require(
-            ctx.dstChainId != 0 && ctx.dstChainId != chainId,
-            "Invalid destination chain"
-        );
-        require(ctx.recipient != address(0), "Invalid recipient");
-        require(ctx.deadline > block.timestamp, "Expired deadline");
-        require(ctx.dstToken.length > 0, "Invalid destination token");
+        if (ctx.srcAmount == 0) revert ErrInvalidAmount(ctx.srcAmount);
+        if (ctx.dstChainId == 0 || ctx.dstChainId == chainId)
+            revert ErrInvalidDestinationChain(ctx.dstChainId);
+        if (ctx.recipient == address(0))
+            revert ErrInvalidAddress(ctx.recipient);
+        if (ctx.deadline <= block.timestamp)
+            revert ErrExpiredDeadline(ctx.deadline);
+        if (ctx.dstToken.length == 0) revert ErrInvalidDestinationToken();
     }
 
     function _createSubmittedOrder(
@@ -369,7 +373,10 @@ contract Bridge is IBridge, Withdrawable {
 
         _validateSubmitOrderInputs(ctx);
 
-        uint256 srcAmountWithFee = _lockOrderAssets(ctx.srcToken, ctx.srcAmount);
+        uint256 srcAmountWithFee = _lockOrderAssets(
+            ctx.srcToken,
+            ctx.srcAmount
+        );
         orderId = _createSubmittedOrder(ctx, srcAmountWithFee);
 
         return orderId;
@@ -422,13 +429,13 @@ contract Bridge is IBridge, Withdrawable {
     ) internal {
         if (order.srcToken == NATIVE_TOKEN_ADDRESS) {
             (bool userOk, ) = payable(order.user).call{value: userRefund}("");
-            require(userOk, "Transfer to user failed");
+            if (!userOk) revert ErrTransferFailed();
 
             address rewardRecipient = solvers[order.solver].rewardRecipient;
             (bool solverOk, ) = payable(rewardRecipient).call{
                 value: solverReward
             }("");
-            require(solverOk, "Transfer to solver failed");
+            if (!solverOk) revert ErrTransferFailed();
             return;
         }
 
@@ -445,28 +452,24 @@ contract Bridge is IBridge, Withdrawable {
         uint256 dstAmount,
         ZKExecution calldata zk
     ) internal pure {
-        require(zk.publicInputs.length >= 4, "Bad public input length");
-        require(zk.publicInputs[0] == orderId, "Public order mismatch");
-        require(
-            zk.publicInputs[1] == bytes32(uint256(uint160(dstRecipient))),
-            "Public recipient mismatch"
-        );
-        require(
-            zk.publicInputs[2] == bytes32(dstAmount),
-            "Public amount mismatch"
-        );
-        require(
-            zk.publicInputs[3] == zk.nullifier,
-            "Public nullifier mismatch"
-        );
+        if (zk.publicInputs.length < 4)
+            revert ErrInvalidZKProof();
+        if (zk.publicInputs[0] != orderId)
+            revert ErrInvalidZKProof();
+        if (zk.publicInputs[1] != bytes32(uint256(uint160(dstRecipient))))
+            revert ErrInvalidZKProof();
+        if (zk.publicInputs[2] != bytes32(dstAmount))
+            revert ErrInvalidZKProof();
+        if (zk.publicInputs[3] != zk.nullifier)
+            revert ErrInvalidZKProof();
     }
 
     function _validateExecutionProof(
         ExecutionContext memory ctx,
         ZKExecution calldata zk
     ) internal view returns (bytes32 digest) {
-        require(zkVerifier != address(0), "Verifier not set");
-        require(!usedNullifiers[zk.nullifier], "Nullifier used");
+        if (zkVerifier == address(0)) revert ErrVerifierNotSet();
+        if (usedNullifiers[zk.nullifier]) revert ErrNullifierUsed(zk.nullifier);
 
         digest = DigestLib.buildExecutionDigest(
             address(this),
@@ -478,19 +481,14 @@ contract Bridge is IBridge, Withdrawable {
             zk.nullifier
         );
 
-        require(!usedExecutionDigests[digest], "Execution replayed");
-        require(
-            SignatureLib.recoverSigner(digest, zk.solverSignature) == ctx.solver,
-            "Invalid solver signature"
-        );
+        if (usedExecutionDigests[digest]) revert ErrExecutionReplayed(digest);
+        if (
+            SignatureLib.recoverSigner(digest, zk.solverSignature) !=
+                ctx.solver
+        ) revert ErrInvalidSolverSignature();
 
         // Bind proof public inputs to order core fields.
-        _validatePublicInputs(
-            ctx.orderId,
-            ctx.dstRecipient,
-            ctx.dstAmount,
-            zk
-        );
+        _validatePublicInputs(ctx.orderId, ctx.dstRecipient, ctx.dstAmount, zk);
     }
 
     /* =================== Phase 2: Solver Executes Transfer ==================== */
@@ -501,10 +499,13 @@ contract Bridge is IBridge, Withdrawable {
         ExecutionContext memory ctx
     ) internal {
         Order storage order = orders[ctx.orderId];
-        require(order.user != address(0), "Order not found");
-        require(order.status == OrderStatus.Submitted, "Invalid order status");
-        require(order.dstChainId == chainId, "Wrong chain");
-        require(ctx.dstAmount >= order.minDstAmount, "Insufficient output");
+        if (order.user == address(0)) revert ErrOrderNotFound(ctx.orderId);
+        if (order.status != OrderStatus.Submitted)
+            revert ErrInvalidOrderStatus(uint8(order.status));
+        if (order.dstChainId != chainId)
+            revert ErrWrongChain(order.dstChainId, chainId);
+        if (ctx.dstAmount < order.minDstAmount)
+            revert ErrInsufficientOutput(ctx.dstAmount, order.minDstAmount);
 
         // Update order with execution details
         order.solver = ctx.solver;
@@ -528,10 +529,11 @@ contract Bridge is IBridge, Withdrawable {
         ZKExecution calldata zk
     ) external nonReentrant whenNotPaused {
         address solver = msg.sender;
-        require(isSolver[solver], "Not a solver");
-        require(solvers[solver].active, "Solver inactive");
-        require(dstAmount > 0, "Invalid amount");
-        require(dstRecipient != address(0), "Invalid recipient");
+        if (!isSolver[solver]) revert ErrNotSolver(solver);
+        if (!solvers[solver].active) revert ErrSolverInactive(solver);
+        if (dstAmount == 0) revert ErrInvalidAmount(dstAmount);
+        if (dstRecipient == address(0))
+            revert ErrInvalidAddress(dstRecipient);
 
         ExecutionContext memory ctx = ExecutionContext({
             orderId: orderId,
@@ -543,8 +545,11 @@ contract Bridge is IBridge, Withdrawable {
 
         bytes32 digest = _validateExecutionProof(ctx, zk);
 
-        bool valid = IZKVerifier(zkVerifier).verify(zk.zkProof, zk.publicInputs);
-        require(valid, "Invalid zk proof");
+        bool valid = IZKVerifier(zkVerifier).verify(
+            zk.zkProof,
+            zk.publicInputs
+        );
+        if (!valid) revert ErrInvalidZKProof();
 
         usedNullifiers[zk.nullifier] = true;
         usedExecutionDigests[digest] = true;
@@ -574,13 +579,16 @@ contract Bridge is IBridge, Withdrawable {
         bool approved
     ) external nonReentrant {
         address validator = msg.sender;
-        require(isValidator[validator], "Not a validator");
-        require(validators[validator].active, "Validator inactive");
+        if (!isValidator[validator]) revert ErrNotValidator(validator);
+        if (!validators[validator].active)
+            revert ErrValidatorInactive(validator);
 
         Order storage order = orders[orderId];
-        require(order.user != address(0), "Order not found");
-        require(order.status == OrderStatus.Executed, "Invalid order status");
-        require(!hasApproved[orderId][validator], "Already approved");
+        if (order.user == address(0)) revert ErrOrderNotFound(orderId);
+        if (order.status != OrderStatus.Executed)
+            revert ErrInvalidOrderStatus(uint8(order.status));
+        if (hasApproved[orderId][validator])
+            revert ErrAlreadyApproved(validator, orderId);
 
         hasApproved[orderId][validator] = true;
 
@@ -605,13 +613,11 @@ contract Bridge is IBridge, Withdrawable {
     /// @param orderId The order ID
     function settleOrder(bytes32 orderId) external nonReentrant {
         Order storage order = orders[orderId];
-        require(order.user != address(0), "Order not found");
-        require(order.status == OrderStatus.Completed, "Cannot settle");
-        require(!order.settled, "Already settled");
-        require(
-            block.timestamp >= settlementReadyAt[orderId],
-            "Challenge window open"
-        );
+        if (order.user == address(0)) revert ErrOrderNotFound(orderId);
+        if (order.status != OrderStatus.Completed) revert ErrCannotSettle();
+        if (order.settled) revert ErrAlreadySettled(orderId);
+        if (block.timestamp < settlementReadyAt[orderId])
+            revert ErrChallengeWindowOpen(settlementReadyAt[orderId]);
 
         order.settled = true;
         order.status = OrderStatus.Settled;
@@ -629,16 +635,13 @@ contract Bridge is IBridge, Withdrawable {
     /// @param orderId The order ID
     function refundOrder(bytes32 orderId) external nonReentrant {
         Order storage order = orders[orderId];
-        require(order.user != address(0), "Order not found");
-        require(
-            order.status == OrderStatus.Submitted ||
-                order.status == OrderStatus.Executed,
-            "Cannot refund"
-        );
-        require(
-            block.timestamp > order.deadline || msg.sender == order.user,
-            "Cannot refund yet"
-        );
+        if (order.user == address(0)) revert ErrOrderNotFound(orderId);
+        if (
+            order.status != OrderStatus.Submitted &&
+                order.status != OrderStatus.Executed
+        ) revert ErrCannotRefund();
+        if (block.timestamp <= order.deadline && msg.sender != order.user)
+            revert ErrCannotRefundYet(order.deadline);
 
         order.status = OrderStatus.Refunded;
 
@@ -647,7 +650,7 @@ contract Bridge is IBridge, Withdrawable {
             (bool success, ) = payable(order.user).call{
                 value: order.srcAmountWithFee
             }("");
-            require(success, "Refund failed");
+            if (!success) revert ErrTransferFailed();
         } else {
             IERC20(order.srcToken).safeTransfer(
                 order.user,
@@ -662,16 +665,21 @@ contract Bridge is IBridge, Withdrawable {
         bytes32 orderId,
         address validator
     ) external nonReentrant {
-        require(orderRejectCount[orderId] > 0, "No reject votes");
-        require(isValidator[validator], "Not a validator");
-        require(hasApproved[orderId][validator], "Validator did not vote");
+        if (orderRejectCount[orderId] == 0)
+            revert ErrNoRejectVotes(orderId);
+        if (!isValidator[validator]) revert ErrNotValidator(validator);
+        if (!hasApproved[orderId][validator])
+            revert ErrValidatorDidNotVote(validator, orderId);
 
         uint256 penalty = (validators[validator].stake * validatorPenaltyBps) /
             10000;
-        
+
         // Slash validator stake
         ValidatorInfo storage info = validators[validator];
-        uint256 slashAmount = ValidatorLib.calculateSlashAmount(info.stake, penalty);
+        uint256 slashAmount = ValidatorLib.calculateSlashAmount(
+            info.stake,
+            penalty
+        );
         if (slashAmount > 0) {
             info.stake -= slashAmount;
             info.slashCount++;

@@ -7,11 +7,5 @@ remappings = [
     "@openzeppelin/contracts-upgradeable=lib/openzeppelin-contracts-upgradeable/contracts",
 ]
 optimizer = true
-optimizer_runs = 200
-via_ir = true
-
-[profile.coverage]
-optimizer = false
+optimizer_runs = 100
 via_ir = false
-
-# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

@@ -7,18 +7,8 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import {Bridge, IZKVerifier} from "../src/Bridge.sol";
 import {IBridge} from "../src/interfaces/IBridge.sol";
-import {
-    NATIVE_TOKEN_ADDRESS,
-    CHALLENGE_WINDOW,
-    ADMIN_ROLE
-} from "../src/Constant.sol";
-import {
-    ErrUnauthorized,
-    ErrInvalidAddress,
-    ErrInvalidAmount,
-    ErrInsufficientBalance,
-    ErrTransferFailed
-} from "../src/Error.sol";
+import {NATIVE_TOKEN_ADDRESS, CHALLENGE_WINDOW, ADMIN_ROLE} from "../src/Constant.sol";
+import {ErrUnauthorized, ErrInvalidAddress, ErrInvalidAmount, ErrInsufficientBalance, ErrTransferFailed, ErrFeeTooHigh, ErrPenaltyTooHigh, ErrInvalidValidatorCount, ErrInsufficientStake, ErrSlashExceedsStake, ErrAlreadyRegistered, ErrNotValidator, ErrNotSolver, ErrAlreadyInactive, ErrInsufficientETH, ErrUnexpectedETH, ErrInvalidDestinationChain, ErrExpiredDeadline, ErrInvalidDestinationToken, ErrOrderNotFound, ErrInvalidOrderStatus, ErrWrongChain, ErrInsufficientOutput, ErrVerifierNotSet, ErrNullifierUsed, ErrExecutionReplayed, ErrInvalidSolverSignature, ErrInvalidZKProof, ErrSolverInactive, ErrValidatorInactive, ErrAlreadyApproved, ErrCannotSettle, ErrAlreadySettled, ErrChallengeWindowOpen, ErrCannotRefund, ErrCannotRefundYet, ErrNoRejectVotes, ErrValidatorDidNotVote} from "../src/Error.sol";
 import {HashLib} from "../src/lib/HashLib.sol";
 import {SignatureLib} from "../src/lib/SignatureLib.sol";
 import {ValidatorLib} from "../src/lib/ValidatorLib.sol";
@@ -111,7 +101,6 @@ contract HashHarness {
                 solver
             );
     }
-
 }
 
 contract LibHarness {
@@ -146,7 +135,10 @@ contract UnauthorizedCaller {
         }
     }
 
-    function attemptUpgrade(address bridge, address newImpl) external returns (bool) {
+    function attemptUpgrade(
+        address bridge,
+        address newImpl
+    ) external returns (bool) {
         try Bridge(payable(bridge)).upgradeToAndCall(newImpl, "") {
             return true;
         } catch {
@@ -178,7 +170,10 @@ contract BridgeTest is Test {
         validator2 = makeAddr("validator2");
 
         BridgeHarness impl = new BridgeHarness();
-        bytes memory initData = abi.encodeCall(Bridge.initialize, (address(this), 137));
+        bytes memory initData = abi.encodeCall(
+            Bridge.initialize,
+            (address(this), 137)
+        );
         ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
         bridge = BridgeHarness(payable(address(proxy)));
 
@@ -209,7 +204,10 @@ contract BridgeTest is Test {
 
     function testInitializeRevertsZeroOwner() external {
         BridgeHarness impl = new BridgeHarness();
-        bytes memory badInit = abi.encodeCall(Bridge.initialize, (address(0), 137));
+        bytes memory badInit = abi.encodeCall(
+            Bridge.initialize,
+            (address(0), 137)
+        );
 
         vm.expectRevert(
             abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
@@ -250,13 +248,21 @@ contract BridgeTest is Test {
         vm.deal(candidate, 1 ether);
 
         vm.prank(candidate);
-        vm.expectRevert("Insufficient stake");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrInsufficientStake.selector,
+                0.5 ether,
+                1 ether
+            )
+        );
         bridge.registerValidator{value: 0.5 ether}();
     }
 
     function testRegisterValidatorRevertsAlreadyRegistered() external {
         vm.prank(validator1);
-        vm.expectRevert("Already registered");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrAlreadyRegistered.selector, validator1)
+        );
         bridge.registerValidator{value: 1 ether}();
     }
 
@@ -277,7 +283,7 @@ contract BridgeTest is Test {
 
     function testUnregisterValidatorRevertsNotValidator() external {
         vm.prank(user);
-        vm.expectRevert("Not a validator");
+        vm.expectRevert(abi.encodeWithSelector(ErrNotValidator.selector, user));
         bridge.unregisterValidator();
     }
 
@@ -291,7 +297,9 @@ contract BridgeTest is Test {
         bridge.setValidatorForTest(validator1, info, true);
 
         vm.prank(validator1);
-        vm.expectRevert("Already inactive");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrAlreadyInactive.selector, validator1)
+        );
         bridge.unregisterValidator();
     }
 
@@ -326,7 +334,9 @@ contract BridgeTest is Test {
         vm.deal(user, 10 ether);
 
         vm.prank(user);
-        vm.expectRevert("Invalid destination chain");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidDestinationChain.selector, 0)
+        );
         bridge.submitOrder{value: 1 ether}(
             NATIVE_TOKEN_ADDRESS,
             1 ether,
@@ -338,7 +348,9 @@ contract BridgeTest is Test {
         );
 
         vm.prank(user);
-        vm.expectRevert("Invalid destination chain");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidDestinationChain.selector, 137)
+        );
         bridge.submitOrder{value: 1 ether}(
             NATIVE_TOKEN_ADDRESS,
             1 ether,
@@ -354,7 +366,7 @@ contract BridgeTest is Test {
         vm.deal(user, 10 ether);
 
         vm.prank(user);
-        vm.expectRevert("Invalid amount");
+        vm.expectRevert(abi.encodeWithSelector(ErrInvalidAmount.selector, 0));
         bridge.submitOrder(
             NATIVE_TOKEN_ADDRESS,
             0,
@@ -370,7 +382,9 @@ contract BridgeTest is Test {
         vm.deal(user, 10 ether);
 
         vm.prank(user);
-        vm.expectRevert("Invalid recipient");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
+        );
         bridge.submitOrder{value: 1 ether}(
             NATIVE_TOKEN_ADDRESS,
             1 ether,
@@ -386,7 +400,9 @@ contract BridgeTest is Test {
         vm.deal(user, 10 ether);
 
         vm.prank(user);
-        vm.expectRevert("Expired deadline");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrExpiredDeadline.selector, block.timestamp)
+        );
         bridge.submitOrder{value: 1 ether}(
             NATIVE_TOKEN_ADDRESS,
             1 ether,
@@ -402,7 +418,7 @@ contract BridgeTest is Test {
         vm.deal(user, 10 ether);
 
         vm.prank(user);
-        vm.expectRevert("Invalid destination token");
+        vm.expectRevert(ErrInvalidDestinationToken.selector);
         bridge.submitOrder{value: 1 ether}(
             NATIVE_TOKEN_ADDRESS,
             1 ether,
@@ -420,7 +436,7 @@ contract BridgeTest is Test {
 
         vm.startPrank(user);
         mockToken.approve(address(bridge), 1 ether);
-        vm.expectRevert("ETH not needed");
+        vm.expectRevert(ErrUnexpectedETH.selector);
         bridge.submitOrder{value: 1 wei}(
             address(mockToken),
             1 ether,
@@ -462,8 +478,14 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Invalid solver signature");
-        bridge.executeTransfer(orderId, makeAddr("dstToken"), 1 ether, user, zk);
+        vm.expectRevert(ErrInvalidSolverSignature.selector);
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstToken"),
+            1 ether,
+            user,
+            zk
+        );
     }
 
     function testExecuteTransferRevertsInvalidSignatureLength() external {
@@ -484,7 +506,7 @@ contract BridgeTest is Test {
         });
 
         vm.prank(solver);
-        vm.expectRevert("Invalid solver signature");
+        vm.expectRevert(ErrInvalidSolverSignature.selector);
         bridge.executeTransfer(
             orderId,
             makeAddr("dstTokenSigLen"),
@@ -524,8 +546,19 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Nullifier used");
-        bridge.executeTransfer(otherOrderId, dstToken, dstAmount, user, replayZk);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrNullifierUsed.selector,
+                replayZk.nullifier
+            )
+        );
+        bridge.executeTransfer(
+            otherOrderId,
+            dstToken,
+            dstAmount,
+            user,
+            replayZk
+        );
     }
 
     function testExecuteTransferRevertsWhenCallerNotSolver() external {
@@ -541,8 +574,14 @@ contract BridgeTest is Test {
         );
 
         vm.prank(user);
-        vm.expectRevert("Not a solver");
-        bridge.executeTransfer(orderId, makeAddr("dstTokenNotSolver"), 1 ether, user, zk);
+        vm.expectRevert(abi.encodeWithSelector(ErrNotSolver.selector, user));
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstTokenNotSolver"),
+            1 ether,
+            user,
+            zk
+        );
     }
 
     function testExecuteTransferRevertsWhenSolverInactive() external {
@@ -566,8 +605,16 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Solver inactive");
-        bridge.executeTransfer(orderId, makeAddr("dstTokenInactive"), 1 ether, user, zk);
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrSolverInactive.selector, solver)
+        );
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstTokenInactive"),
+            1 ether,
+            user,
+            zk
+        );
     }
 
     function testExecuteTransferRevertsInvalidAmount() external {
@@ -583,7 +630,7 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Invalid amount");
+        vm.expectRevert(abi.encodeWithSelector(ErrInvalidAmount.selector, 0));
         bridge.executeTransfer(orderId, makeAddr("dstTokenZero"), 0, user, zk);
     }
 
@@ -600,8 +647,16 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Invalid recipient");
-        bridge.executeTransfer(orderId, makeAddr("dstTokenRecipient"), 1 ether, address(0), zk);
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
+        );
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstTokenRecipient"),
+            1 ether,
+            address(0),
+            zk
+        );
     }
 
     function testExecuteTransferRevertsExecutionReplayedDigest() external {
@@ -630,7 +685,9 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Execution replayed");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrExecutionReplayed.selector, digest)
+        );
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -667,7 +724,7 @@ contract BridgeTest is Test {
         });
 
         vm.prank(solver);
-        vm.expectRevert("Bad public input length");
+        vm.expectRevert(ErrInvalidZKProof.selector);
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -705,7 +762,7 @@ contract BridgeTest is Test {
         });
 
         vm.prank(solver);
-        vm.expectRevert("Public recipient mismatch");
+        vm.expectRevert(ErrInvalidZKProof.selector);
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -743,7 +800,7 @@ contract BridgeTest is Test {
         });
 
         vm.prank(solver);
-        vm.expectRevert("Public order mismatch");
+        vm.expectRevert(ErrInvalidZKProof.selector);
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -781,7 +838,7 @@ contract BridgeTest is Test {
         });
 
         vm.prank(solver);
-        vm.expectRevert("Public amount mismatch");
+        vm.expectRevert(ErrInvalidZKProof.selector);
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -819,7 +876,7 @@ contract BridgeTest is Test {
         });
 
         vm.prank(solver);
-        vm.expectRevert("Public nullifier mismatch");
+        vm.expectRevert(ErrInvalidZKProof.selector);
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -840,7 +897,7 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Invalid zk proof");
+        vm.expectRevert(ErrInvalidZKProof.selector);
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -859,7 +916,9 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Order not found");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrOrderNotFound.selector, orderId)
+        );
         bridge.executeTransfer(orderId, dstToken, dstAmount, user, zk);
     }
 
@@ -876,8 +935,16 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Wrong chain");
-        bridge.executeTransfer(orderId, makeAddr("dstTokenWrongChain"), 1 ether, user, zk);
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrWrongChain.selector, 10, 137)
+        );
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstTokenWrongChain"),
+            1 ether,
+            user,
+            zk
+        );
     }
 
     function testExecuteTransferRevertsInsufficientOutput() external {
@@ -893,8 +960,20 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Insufficient output");
-        bridge.executeTransfer(orderId, makeAddr("dstTokenLowOut"), 1 ether, user, zk);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrInsufficientOutput.selector,
+                1 ether,
+                2 ether
+            )
+        );
+        bridge.executeTransfer(
+            orderId,
+            makeAddr("dstTokenLowOut"),
+            1 ether,
+            user,
+            zk
+        );
     }
 
     function testValidatorRejectGetsSlashed() external {
@@ -915,7 +994,7 @@ contract BridgeTest is Test {
         _setExecutedOrder(orderId, 137, 1 ether);
 
         vm.prank(user);
-        vm.expectRevert("Not a validator");
+        vm.expectRevert(abi.encodeWithSelector(ErrNotValidator.selector, user));
         bridge.approveOrderSettlement(orderId, true);
     }
 
@@ -926,7 +1005,9 @@ contract BridgeTest is Test {
         bridge.slashValidator(validator1, 1 ether);
 
         vm.prank(validator1);
-        vm.expectRevert("Validator inactive");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrValidatorInactive.selector, validator1)
+        );
         bridge.approveOrderSettlement(orderId, true);
     }
 
@@ -938,7 +1019,13 @@ contract BridgeTest is Test {
         bridge.approveOrderSettlement(orderId, true);
 
         vm.prank(validator1);
-        vm.expectRevert("Already approved");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrAlreadyApproved.selector,
+                validator1,
+                orderId
+            )
+        );
         bridge.approveOrderSettlement(orderId, true);
     }
 
@@ -949,7 +1036,13 @@ contract BridgeTest is Test {
     }
 
     function testSlashValidatorRevertsExceedsStake() external {
-        vm.expectRevert("Slash exceeds stake");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrSlashExceedsStake.selector,
+                2 ether,
+                1 ether
+            )
+        );
         bridge.slashValidator(validator1, 2 ether);
     }
 
@@ -966,7 +1059,12 @@ contract BridgeTest is Test {
 
     function testApproveOrderSettlementRevertsOrderNotFound() external {
         vm.prank(validator1);
-        vm.expectRevert("Order not found");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrOrderNotFound.selector,
+                keccak256("missing-order")
+            )
+        );
         bridge.approveOrderSettlement(keccak256("missing-order"), true);
     }
 
@@ -975,7 +1073,12 @@ contract BridgeTest is Test {
         _setSubmittedOrder(orderId, 137, 1 ether);
 
         vm.prank(validator1);
-        vm.expectRevert("Invalid order status");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrInvalidOrderStatus.selector,
+                uint8(IBridge.OrderStatus.Submitted)
+            )
+        );
         bridge.approveOrderSettlement(orderId, true);
     }
 
@@ -990,13 +1093,18 @@ contract BridgeTest is Test {
         vm.prank(validator1);
         bridge.approveOrderSettlement(orderId, true);
 
-        vm.expectRevert("Challenge window open");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrChallengeWindowOpen.selector,
+                block.timestamp + 600
+            )
+        );
         bridge.settleOrder(orderId);
 
         vm.warp(block.timestamp + CHALLENGE_WINDOW + 1);
         bridge.settleOrder(orderId);
 
-        (IBridge.Order memory order) = bridge.getOrder(orderId);
+        IBridge.Order memory order = bridge.getOrder(orderId);
         assertEq(uint256(order.status), uint256(IBridge.OrderStatus.Settled));
     }
 
@@ -1087,7 +1195,10 @@ contract BridgeTest is Test {
         );
 
         vm.prank(solver);
-        vm.expectRevert("Cannot refund yet");
+        uint256 deadline = block.timestamp + 1 days;
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrCannotRefundYet.selector, deadline)
+        );
         bridge.refundOrder(orderId);
     }
 
@@ -1099,7 +1210,7 @@ contract BridgeTest is Test {
         vm.prank(validator1);
         bridge.approveOrderSettlement(orderId, true);
 
-        vm.expectRevert("Cannot refund");
+        vm.expectRevert(ErrCannotRefund.selector);
         bridge.refundOrder(orderId);
     }
 
@@ -1107,7 +1218,9 @@ contract BridgeTest is Test {
         bytes32 orderId = keccak256("order-no-reject");
         _setExecutedOrder(orderId, 137, 1 ether);
 
-        vm.expectRevert("No reject votes");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrNoRejectVotes.selector, orderId)
+        );
         bridge.challengeSettlement(orderId, validator1);
     }
 
@@ -1132,7 +1245,13 @@ contract BridgeTest is Test {
         vm.prank(validator1);
         bridge.approveOrderSettlement(orderId, false);
 
-        vm.expectRevert("Validator did not vote");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrValidatorDidNotVote.selector,
+                validator2,
+                orderId
+            )
+        );
         bridge.challengeSettlement(orderId, validator2);
     }
 
@@ -1143,7 +1262,7 @@ contract BridgeTest is Test {
         vm.prank(validator1);
         bridge.approveOrderSettlement(orderId, false);
 
-        vm.expectRevert("Not a validator");
+        vm.expectRevert(abi.encodeWithSelector(ErrNotValidator.selector, user));
         bridge.challengeSettlement(orderId, user);
     }
 
@@ -1151,7 +1270,7 @@ contract BridgeTest is Test {
         bytes32 orderId = keccak256("order-not-completed");
         _setExecutedOrder(orderId, 137, 1 ether);
 
-        vm.expectRevert("Cannot settle");
+        vm.expectRevert(ErrCannotSettle.selector);
         bridge.settleOrder(orderId);
     }
 
@@ -1164,12 +1283,19 @@ contract BridgeTest is Test {
         order.settled = true;
         bridge.setOrderForTest(orderId, order);
 
-        vm.expectRevert("Already settled");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrAlreadySettled.selector, orderId)
+        );
         bridge.settleOrder(orderId);
     }
 
     function testSettleOrderRevertsOrderNotFound() external {
-        vm.expectRevert("Order not found");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrOrderNotFound.selector,
+                keccak256("missing-settle-order")
+            )
+        );
         bridge.settleOrder(keccak256("missing-settle-order"));
     }
 
@@ -1228,13 +1354,21 @@ contract BridgeTest is Test {
         vm.deal(candidate, 1 ether);
 
         vm.prank(candidate);
-        vm.expectRevert("Insufficient stake");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrInsufficientStake.selector,
+                0.5 ether,
+                bridge.minSolverStake()
+            )
+        );
         bridge.registerSolver{value: 0.5 ether}(candidate);
     }
 
     function testRegisterSolverRevertsAlreadyRegistered() external {
         vm.prank(solver);
-        vm.expectRevert("Already registered");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrAlreadyRegistered.selector, solver)
+        );
         bridge.registerSolver{value: 1 ether}(solverReward);
     }
 
@@ -1243,7 +1377,9 @@ contract BridgeTest is Test {
         vm.deal(candidate, 2 ether);
 
         vm.prank(candidate);
-        vm.expectRevert("Invalid recipient");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
+        );
         bridge.registerSolver{value: 1 ether}(address(0));
     }
 
@@ -1265,7 +1401,7 @@ contract BridgeTest is Test {
 
     function testUnregisterSolverRevertsNotSolver() external {
         vm.prank(user);
-        vm.expectRevert("Not a solver");
+        vm.expectRevert(abi.encodeWithSelector(ErrNotSolver.selector, user));
         bridge.unregisterSolver();
     }
 
@@ -1279,17 +1415,21 @@ contract BridgeTest is Test {
         bridge.setSolverForTest(solver, info, true);
 
         vm.prank(solver);
-        vm.expectRevert("Already inactive");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrAlreadyInactive.selector, solver)
+        );
         bridge.unregisterSolver();
     }
 
     function testSetSolverRewardRecipientPaths() external {
         vm.prank(user);
-        vm.expectRevert("Not a solver");
+        vm.expectRevert(abi.encodeWithSelector(ErrNotSolver.selector, user));
         bridge.setSolverRewardRecipient(makeAddr("r1"));
 
         vm.prank(solver);
-        vm.expectRevert("Invalid recipient");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidAddress.selector, address(0))
+        );
         bridge.setSolverRewardRecipient(address(0));
 
         address newRecipient = makeAddr("solver-new-recipient");
@@ -1301,18 +1441,24 @@ contract BridgeTest is Test {
     }
 
     function testAdminSettersRevertInvalidValues() external {
-        vm.expectRevert("Fee too high");
+        vm.expectRevert(abi.encodeWithSelector(ErrFeeTooHigh.selector, 10001));
         bridge.setProtocolFee(10001);
 
-        vm.expectRevert("Penalty too high");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrPenaltyTooHigh.selector, 5001)
+        );
         bridge.setValidatorPenaltyBps(5001);
 
-        vm.expectRevert("Invalid validator count");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidValidatorCount.selector, 0)
+        );
         bridge.setRequiredValidators(0);
     }
 
     function testSetRequiredValidatorsRevertsAboveTotalValidators() external {
-        vm.expectRevert("Invalid validator count");
+        vm.expectRevert(
+            abi.encodeWithSelector(ErrInvalidValidatorCount.selector, 3)
+        );
         bridge.setRequiredValidators(3);
     }
 
@@ -1324,7 +1470,12 @@ contract BridgeTest is Test {
     }
 
     function testRefundOrderRevertsOrderNotFound() external {
-        vm.expectRevert("Order not found");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ErrOrderNotFound.selector,
+                keccak256("missing-refund-order")
+            )
+        );
         bridge.refundOrder(keccak256("missing-refund-order"));
     }
 
@@ -1382,7 +1533,11 @@ contract BridgeTest is Test {
         vm.deal(address(bridge), 2 ether);
 
         vm.expectRevert(ErrTransferFailed.selector);
-        bridge.emergencyWithdraw(NATIVE_TOKEN_ADDRESS, 1 ether, address(receiver));
+        bridge.emergencyWithdraw(
+            NATIVE_TOKEN_ADDRESS,
+            1 ether,
+            address(receiver)
+        );
     }
 
     function testEmergencyWithdrawRevertsErc20TransferFailure() external {
@@ -1416,7 +1571,7 @@ contract BridgeTest is Test {
         assertEq(viaLib, expected);
     }
 
-    function testSignatureLibRecoverSupportsNormalizedV() external {
+    function testSignatureLibRecoverSupportsNormalizedV() external view {
         bytes32 digest = keccak256("sig-normalized-v");
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(
             solverPk,
@@ -1430,7 +1585,7 @@ contract BridgeTest is Test {
         assertEq(recovered, solver);
     }
 
-    function testSignatureLibRecoverReturnsZeroForInvalidV() external {
+    function testSignatureLibRecoverReturnsZeroForInvalidV() external view {
         bytes32 digest = keccak256("sig-invalid-v");
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(
             solverPk,
@@ -1500,25 +1655,31 @@ contract BridgeTest is Test {
         UnauthorizedCaller caller = new UnauthorizedCaller();
         BridgeHarness newImpl = new BridgeHarness();
         bool success = caller.attemptUpgrade(address(bridge), address(newImpl));
-        assertFalse(success, "Unauthorized caller should not be able to upgrade");
+        assertFalse(
+            success,
+            "Unauthorized caller should not be able to upgrade"
+        );
     }
 
     function testOwnerCanPauseAndUnpause() external {
         assertFalse(bridge.paused(), "Should not be paused initially");
-        
+
         bridge.pause();
         assertTrue(bridge.paused(), "Should be paused after owner pauses");
-        
+
         bridge.unpause();
-        assertFalse(bridge.paused(), "Should not be paused after owner unpauses");
+        assertFalse(
+            bridge.paused(),
+            "Should not be paused after owner unpauses"
+        );
     }
 
     function testAdminRoleCanUnpauseAfterOwnerPause() external {
         bridge.grantRole(ADMIN_ROLE, validator1);
-        
+
         bridge.pause();
         assertTrue(bridge.paused());
-        
+
         vm.prank(validator1);
         bridge.unpause();
         assertFalse(bridge.paused());
@@ -1526,7 +1687,7 @@ contract BridgeTest is Test {
 
     function testNonAdminCannotUnpause() external {
         bridge.pause();
-        
+
         vm.prank(user);
         vm.expectRevert(ErrUnauthorized.selector);
         bridge.unpause();
