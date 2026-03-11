@@ -147,6 +147,21 @@ contract UnauthorizedCaller {
     }
 }
 
+contract ContractSolverExecutor {
+    function swapAndExecute(
+        IBridge bridge,
+        address dstToken,
+        address recipient,
+        uint256 amount,
+        bytes32 orderId,
+        bytes calldata dstRecipient,
+        IBridge.ZkExecution calldata zk
+    ) external {
+        ERC20(dstToken).transfer(recipient, amount);
+        bridge.executeTransfer(orderId, dstToken, amount, dstRecipient, zk);
+    }
+}
+
 contract BridgeTest is Test {
     BridgeHarness internal bridge;
     MockZKVerifier internal verifier;
@@ -746,6 +761,47 @@ contract BridgeTest is Test {
         IBridge.Order memory order = bridge.getOrder(orderId);
         assertEq(storedRecipient, dstRecipient);
         assertEq(uint256(order.status), uint256(IBridge.OrderStatus.Executed));
+    }
+
+    function testExecuteTransferBySolverContractAfterSwapToRecipient() external {
+        bytes32 orderId = keccak256("order-contract-solver");
+        uint256 dstAmount = 1 ether;
+        address recipient = makeAddr("contract-solver-recipient");
+        bytes memory recipientBytes = abi.encodePacked(recipient);
+
+        _setSubmittedOrder(orderId, 137, dstAmount);
+
+        ContractSolverExecutor impl = new ContractSolverExecutor();
+        vm.etch(solver, address(impl).code);
+
+        mockToken.mint(solver, dstAmount);
+
+        IBridge.ZkExecution memory zk = _signedExecution(
+            orderId,
+            address(mockToken),
+            dstAmount,
+            recipient,
+            keccak256("nullifier-contract-solver")
+        );
+
+        uint256 recipientBefore = mockToken.balanceOf(recipient);
+
+        ContractSolverExecutor(solver).swapAndExecute(
+            bridge,
+            address(mockToken),
+            recipient,
+            dstAmount,
+            orderId,
+            recipientBytes,
+            zk
+        );
+
+        IBridge.Order memory order = bridge.getOrder(orderId);
+        assertEq(uint256(order.status), uint256(IBridge.OrderStatus.Executed));
+        assertEq(order.solver, solver);
+        assertEq(order.dstAmount, dstAmount);
+        assertEq(mockToken.balanceOf(recipient), recipientBefore + dstAmount);
+        assertEq(bridge.getOrderRecipientBytes(orderId), recipientBytes);
     }
 
     function testExecuteTransferRevertsExecutionReplayedDigest() external {
